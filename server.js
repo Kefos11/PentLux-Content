@@ -74,7 +74,7 @@ function shellyCreds(apt) {
 async function shellyControl(apt, dev, turnOn) {
   const { server, key } = shellyCreds(apt);
   if (!server || !key) throw new Error('Shelly not configured for ' + apt);
-  const path = dev.type === 'light' ? '/light/control' : '/device/relay/control';
+  const path = dev.type === 'light' ? '/device/light/control' : '/device/relay/control';
   const body = new URLSearchParams({
     id: dev.deviceId,
     channel: String(dev.channel ?? 0),
@@ -143,6 +143,9 @@ app.post('/api/light', async (req, res) => {
   if (!dev) return res.status(404).json({ error: 'unknown light' });
   try {
     const out = await shellyControl(apt, dev, !!turn);
+    if (out && out.isok === false) {
+      return res.status(502).json({ error: 'Shelly refused: ' + JSON.stringify(out.errors || out) });
+    }
     res.json({ ok: true, shelly: out });
   } catch (e) {
     console.error(e);
