@@ -61,11 +61,11 @@ const LIGHTS = {
     { key: 'logoled',    name: 'Logo LED',         deviceId: 'a5b535',       type: 'light' },
     { key: 'saunaled',   name: 'Sauna LED',        deviceId: 'a56b06',       type: 'light' },
     { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover', favPos: 51 },
-    { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance' },
+    { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1 },
   ],
   apt50: [
     // Apt 50 lights go here once you grab their Device IDs.
-    { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance' },
+    { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1 },
   ],
 };
 
@@ -246,10 +246,12 @@ app.post('/api/control', async (req, res) => {
   if (need && token !== need) return res.status(401).json({ error: 'unauthorized' });
   if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
   if (!id) return res.status(400).json({ error: 'missing device id' });
-  const ch = Number.isInteger(channel) ? channel : 0;
   // shared devices (entrance) carry an account override in the registry
   const devRec = (LIGHTS[apt] || []).find(x => x.deviceId === id);
   const acct = (devRec && devRec.acct) || apt;
+  // a device may pin its channel (e.g. the entrance is on relay 1 of a 2-channel Shelly)
+  const ch = (devRec && Number.isInteger(devRec.channel)) ? devRec.channel
+           : (Number.isInteger(channel) ? channel : 0);
   try {
     let resp;
     if (kind === 'cover') {
