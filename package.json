@@ -1,0 +1,13 @@
+{
+  "name": "pentlux-content-api",
+  "version": "1.0.0",
+  "description": "Serves and saves PentLux guest-hub media (photos + EN/MK video IDs).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.11.5"
+  }
+}
