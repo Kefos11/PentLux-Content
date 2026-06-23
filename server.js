@@ -6,9 +6,9 @@
 //   DATABASE_URL     - your Neon connection string (the same one the bot uses is fine)
 //   ADMIN_TOKEN      - a long random password; the panel must send it to save
 //
-// Env vars for Shelly light control (add when you have the key from the phone app):
-//   SHELLY_AUTH_KEY  - the "Get key" authorization key from the Shelly app
-//   SHELLY_SERVER    - your server URL, e.g. https://shelly-XX-eu.shelly.cloud
+// Env vars for Shelly light control (each apartment is a separate Shelly account):
+//   SHELLY_AUTH_KEY_49 / SHELLY_SERVER_49  - Apt 49's "Get key" + server URL
+//   SHELLY_AUTH_KEY_50 / SHELLY_SERVER_50  - Apt 50's "Get key" + server URL
 //   CONTROL_TOKEN    - a long random password gating who can flip lights (temporary,
 //                      replaced by per-stay guest tokens later)
 //
@@ -48,8 +48,8 @@ const VALID_APTS = ['apt49', 'apt50'];
 // channel: usually 0 (use 1 for the second output on a 2-channel device).
 const LIGHTS = {
   apt49: [
-    // { key: 'living',  name: 'Living room', deviceId: 'PASTE_DEVICE_ID', channel: 0, type: 'relay' },
-    // { key: 'bedroom', name: 'Bedroom',     deviceId: 'PASTE_DEVICE_ID', channel: 0, type: 'relay' },
+    { key: 'living', name: 'Living room', deviceId: '8caab54c4cc3', channel: 0, type: 'light' },
+    // add more 49 lights here as: { key: 'bedroom', name: 'Bedroom', deviceId: '...', channel: 0, type: 'light' },
   ],
   apt50: [
     // { key: 'living',  name: 'Living room', deviceId: 'PASTE_DEVICE_ID', channel: 0, type: 'relay' },
@@ -60,11 +60,20 @@ function findLight(apt, key) {
   return (LIGHTS[apt] || []).find(l => l.key === key);
 }
 
+// Each apartment is a separate Shelly account, so each has its own key + server.
+// Set these in Railway Variables:
+//   apt49 -> SHELLY_SERVER_49, SHELLY_AUTH_KEY_49
+//   apt50 -> SHELLY_SERVER_50, SHELLY_AUTH_KEY_50
+function shellyCreds(apt) {
+  if (apt === 'apt49') return { server: process.env.SHELLY_SERVER_49, key: process.env.SHELLY_AUTH_KEY_49 };
+  if (apt === 'apt50') return { server: process.env.SHELLY_SERVER_50, key: process.env.SHELLY_AUTH_KEY_50 };
+  return {};
+}
+
 // Calls Shelly Cloud to switch a device on/off.
-async function shellyControl(dev, turnOn) {
-  const server = process.env.SHELLY_SERVER;
-  const key = process.env.SHELLY_AUTH_KEY;
-  if (!server || !key) throw new Error('Shelly not configured (set SHELLY_SERVER and SHELLY_AUTH_KEY)');
+async function shellyControl(apt, dev, turnOn) {
+  const { server, key } = shellyCreds(apt);
+  if (!server || !key) throw new Error('Shelly not configured for ' + apt);
   const path = dev.type === 'light' ? '/light/control' : '/device/relay/control';
   const body = new URLSearchParams({
     id: dev.deviceId,
@@ -133,7 +142,7 @@ app.post('/api/light', async (req, res) => {
   const dev = findLight(apt, key);
   if (!dev) return res.status(404).json({ error: 'unknown light' });
   try {
-    const out = await shellyControl(dev, !!turn);
+    const out = await shellyControl(apt, dev, !!turn);
     res.json({ ok: true, shelly: out });
   } catch (e) {
     console.error(e);
