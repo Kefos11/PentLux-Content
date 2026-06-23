@@ -108,6 +108,42 @@ async function shellyControl(apt, dev, turnOn) {
   return r.json();
 }
 
+// ===== Shelly v2 cloud API (status + smart control) =====
+async function shellyV2(apt, endpoint, bodyObj) {
+  const { server, key } = shellyCreds(apt);
+  if (!server || !key) throw new Error('Shelly not configured for ' + apt);
+  const base = server.startsWith('http') ? server : 'https://' + server;
+  const url = base.replace(/\/+$/, '') + endpoint + '?auth_key=' + encodeURIComponent(key);
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bodyObj),
+  });
+  const txt = await r.text();
+  try { return JSON.parse(txt); } catch { return { _raw: txt.slice(0, 300), _http: r.status }; }
+}
+
+// Reads one device object (from v2 get) into a simple shape: what it is + on/off + colour.
+function parseDeviceState(dev) {
+  const st = (dev && dev.status) || {};
+  for (const k of Object.keys(st)) {
+    const c = st[k] || {};
+    if (k.startsWith('cover:'))  return { kind: 'cover',  channel: c.id || 0, state: c.state, pos: c.current_pos };
+    if (k.startsWith('switch:')) return { kind: 'switch', channel: c.id || 0, on: !!c.output };
+    if (k.startsWith('rgbw:'))   return { kind: 'rgbw',   channel: c.id || 0, on: !!c.output, rgb: c.rgb, white: c.white, gain: c.gain, brightness: c.brightness };
+    if (k.startsWith('rgb:'))    return { kind: 'rgb',    channel: c.id || 0, on: !!c.output, rgb: c.rgb, gain: c.gain, brightness: c.brightness };
+    if (k.startsWith('light:'))  return { kind: 'light',  channel: c.id || 0, on: !!c.output, brightness: c.brightness };
+  }
+  // Gen1 shapes
+  if (Array.isArray(st.relays) && st.relays.length) return { kind: 'switch', channel: 0, on: !!st.relays[0].ison };
+  if (Array.isArray(st.lights) && st.lights.length) {
+    const l = st.lights[0];
+    return { kind: (l.red !== undefined ? 'rgb' : 'light'), channel: 0, on: !!l.ison, rgb: [l.red, l.green, l.blue], gain: l.gain, brightness: l.brightness };
+  }
+  if (Array.isArray(st.rollers) && st.rollers.length) return { kind: 'cover', channel: 0, state: st.rollers[0].state };
+  return { kind: 'unknown', online: dev && dev.online };
+}
+
 // --- READ (public) ---
 app.get('/api/media/:apt', async (req, res) => {
   const apt = req.params.apt;
@@ -149,7 +185,7 @@ app.post('/api/media/:apt', async (req, res) => {
 app.get('/api/lights/:apt', (req, res) => {
   const apt = req.params.apt;
   if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
-  res.json((LIGHTS[apt] || []).map(l => ({ key: l.key, name: l.name, type: l.type || 'relay' })));
+  res.json((LIGHTS[apt] || []).map(l => ({ key: l.key, name: l.name, id: l.deviceId, type: l.type || 'switch' })));
 });
 
 // --- LIGHTS: flip one on/off (gated by CONTROL_TOKEN for now) ---
@@ -166,6 +202,67 @@ app.post('/api/light', async (req, res) => {
       return res.status(502).json({ error: 'Shelly refused: ' + JSON.stringify(out.errors || out) });
     }
     res.json({ ok: true, shelly: out });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// --- LIGHTS: live status for every device in an apartment (on/off, colour, type) ---
+app.get('/api/status/:apt', async (req, res) => {
+  const apt = req.params.apt;
+  if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
+  const ids = (LIGHTS[apt] || []).map(d => d.deviceId);
+  const out = {};
+  try {
+    for (let i = 0; i < ids.length; i += 10) {
+      const batch = ids.slice(i, i + 10);
+      const resp = await shellyV2(apt, '/v2/devices/api/get', { ids: batch, select: ['status'] });
+      const arr = Array.isArray(resp) ? resp : (resp.data || resp.devices || []);
+      arr.forEach(d => { out[d.id] = parseDeviceState(d); });
+      if (i + 10 < ids.length) await new Promise(r => setTimeout(r, 1100)); // respect 1 req/sec
+    }
+    res.json(out);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// --- LIGHTS: smart control (switch / light / rgb / cover), gated by CONTROL_TOKEN ---
+app.post('/api/control', async (req, res) => {
+  const { apt, id, kind, on, channel, color, cover, pulse, token } = req.body || {};
+  const need = process.env.CONTROL_TOKEN || '';
+  if (need && token !== need) return res.status(401).json({ error: 'unauthorized' });
+  if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
+  if (!id) return res.status(400).json({ error: 'missing device id' });
+  const ch = Number.isInteger(channel) ? channel : 0;
+  try {
+    let resp;
+    if (kind === 'cover') {
+      resp = await shellyV2(apt, '/v2/devices/api/set/cover', { id, channel: ch, position: cover }); // 'open' | 'close' | 'stop'
+    } else if (kind === 'rgb' || kind === 'rgbw') {
+      const body = { id, channel: ch, on: on !== false };
+      if (color) {
+        body.mode = 'color';
+        if (color.r != null) body.red = color.r;
+        if (color.g != null) body.green = color.g;
+        if (color.b != null) body.blue = color.b;
+        if (color.w != null) body.white = color.w;
+        if (color.gain != null) body.gain = color.gain;
+      }
+      resp = await shellyV2(apt, '/v2/devices/api/set/light', body);
+    } else if (kind === 'light') {
+      const body = { id, channel: ch, on: !!on };
+      if (color && color.brightness != null) body.brightness = color.brightness;
+      resp = await shellyV2(apt, '/v2/devices/api/set/light', body);
+    } else { // switch / relay (default)
+      const body = { id, channel: ch, on: !!on };
+      if (pulse) body.toggle_after = pulse; // momentary pulse (e.g. door buzzer)
+      resp = await shellyV2(apt, '/v2/devices/api/set/switch', body);
+    }
+    if (resp && resp.isok === false) return res.status(502).json({ error: 'Shelly refused: ' + JSON.stringify(resp.errors || resp) });
+    res.json({ ok: true, shelly: resp });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
