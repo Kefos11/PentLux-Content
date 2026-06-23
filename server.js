@@ -60,12 +60,12 @@ const LIGHTS = {
     { key: 'stairsled',  name: 'Stairs LED',       deviceId: 'a6afec',       type: 'light' },
     { key: 'logoled',    name: 'Logo LED',         deviceId: 'a5b535',       type: 'light' },
     { key: 'saunaled',   name: 'Sauna LED',        deviceId: 'a56b06',       type: 'light' },
-    { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover', favPos: 52 },
-    { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay' },
+    { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover', favPos: 51 },
+    { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance' },
   ],
   apt50: [
     // Apt 50 lights go here once you grab their Device IDs.
-    { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay' },
+    { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance' },
   ],
 };
 
@@ -73,13 +73,16 @@ function findLight(apt, key) {
   return (LIGHTS[apt] || []).find(l => l.key === key);
 }
 
-// Each apartment is a separate Shelly account, so each has its own key + server.
+// Each apartment is a separate Shelly account, with its own key + server.
+// Shared devices (the building entrance) must use their OWNER account's key.
 // Set these in Railway Variables:
-//   apt49 -> SHELLY_SERVER_49, SHELLY_AUTH_KEY_49
-//   apt50 -> SHELLY_SERVER_50, SHELLY_AUTH_KEY_50
-function shellyCreds(apt) {
-  if (apt === 'apt49') return { server: process.env.SHELLY_SERVER_49, key: process.env.SHELLY_AUTH_KEY_49 };
-  if (apt === 'apt50') return { server: process.env.SHELLY_SERVER_50, key: process.env.SHELLY_AUTH_KEY_50 };
+//   apt49    -> SHELLY_SERVER_49, SHELLY_AUTH_KEY_49
+//   apt50    -> SHELLY_SERVER_50, SHELLY_AUTH_KEY_50
+//   entrance -> SHELLY_SERVER_ENTRANCE, SHELLY_AUTH_KEY_ENTRANCE  (the account that OWNS the door)
+function shellyCreds(acct) {
+  if (acct === 'apt49')    return { server: process.env.SHELLY_SERVER_49, key: process.env.SHELLY_AUTH_KEY_49 };
+  if (acct === 'apt50')    return { server: process.env.SHELLY_SERVER_50, key: process.env.SHELLY_AUTH_KEY_50 };
+  if (acct === 'entrance') return { server: process.env.SHELLY_SERVER_ENTRANCE, key: process.env.SHELLY_AUTH_KEY_ENTRANCE };
   return {};
 }
 
@@ -212,15 +215,22 @@ app.post('/api/light', async (req, res) => {
 app.get('/api/status/:apt', async (req, res) => {
   const apt = req.params.apt;
   if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
-  const ids = (LIGHTS[apt] || []).map(d => d.deviceId);
+  const devs = LIGHTS[apt] || [];
+  const byAcct = {};
+  devs.forEach(d => { const a = d.acct || apt; (byAcct[a] = byAcct[a] || []).push(d.deviceId); });
   const out = {};
   try {
-    for (let i = 0; i < ids.length; i += 10) {
-      const batch = ids.slice(i, i + 10);
-      const resp = await shellyV2(apt, '/v2/devices/api/get', { ids: batch, select: ['status'] });
-      const arr = Array.isArray(resp) ? resp : (resp.data || resp.devices || []);
-      arr.forEach(d => { out[d.id] = parseDeviceState(d); });
-      if (i + 10 < ids.length) await new Promise(r => setTimeout(r, 1100)); // respect 1 req/sec
+    for (const acct of Object.keys(byAcct)) {
+      const ids = byAcct[acct];
+      const { server, key } = shellyCreds(acct);
+      if (!server || !key) continue; // account not configured yet
+      for (let i = 0; i < ids.length; i += 10) {
+        const batch = ids.slice(i, i + 10);
+        const resp = await shellyV2(acct, '/v2/devices/api/get', { ids: batch, select: ['status'] });
+        const arr = Array.isArray(resp) ? resp : (resp.data || resp.devices || []);
+        arr.forEach(d => { out[d.id] = parseDeviceState(d); });
+        await new Promise(r => setTimeout(r, 1100)); // respect 1 req/sec per account
+      }
     }
     res.json(out);
   } catch (e) {
@@ -237,10 +247,13 @@ app.post('/api/control', async (req, res) => {
   if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
   if (!id) return res.status(400).json({ error: 'missing device id' });
   const ch = Number.isInteger(channel) ? channel : 0;
+  // shared devices (entrance) carry an account override in the registry
+  const devRec = (LIGHTS[apt] || []).find(x => x.deviceId === id);
+  const acct = (devRec && devRec.acct) || apt;
   try {
     let resp;
     if (kind === 'cover') {
-      resp = await shellyV2(apt, '/v2/devices/api/set/cover', { id, channel: ch, position: cover }); // 'open' | 'close' | 'stop'
+      resp = await shellyV2(acct, '/v2/devices/api/set/cover', { id, channel: ch, position: cover }); // 'open' | 'close' | 'stop' | number
     } else if (kind === 'rgb' || kind === 'rgbw') {
       const body = { id, channel: ch, on: on !== false };
       if (color) {
@@ -251,22 +264,22 @@ app.post('/api/control', async (req, res) => {
         if (color.w != null) body.white = color.w;
         if (color.gain != null) body.gain = color.gain;
       }
-      resp = await shellyV2(apt, '/v2/devices/api/set/light', body);
+      resp = await shellyV2(acct, '/v2/devices/api/set/light', body);
     } else if (kind === 'light') {
       const body = { id, channel: ch, on: !!on };
       if (color && color.brightness != null) body.brightness = color.brightness;
-      resp = await shellyV2(apt, '/v2/devices/api/set/light', body);
+      resp = await shellyV2(acct, '/v2/devices/api/set/light', body);
     } else { // switch / relay (default)
       const body = { id, channel: ch, on: !!on };
       if (pulse) body.toggle_after = pulse; // momentary pulse (e.g. door buzzer)
-      resp = await shellyV2(apt, '/v2/devices/api/set/switch', body);
+      resp = await shellyV2(acct, '/v2/devices/api/set/switch', body);
     }
     if (resp && resp.isok === false) return res.status(502).json({ error: 'Shelly refused: ' + JSON.stringify(resp.errors || resp) });
     // Re-read the device so the panel reflects reality (respecting the 1 req/sec limit).
     let state = null;
     try {
       await new Promise(r => setTimeout(r, 1100));
-      const fresh = await shellyV2(apt, '/v2/devices/api/get', { ids: [id], select: ['status'] });
+      const fresh = await shellyV2(acct, '/v2/devices/api/get', { ids: [id], select: ['status'] });
       const arr = Array.isArray(fresh) ? fresh : (fresh.data || fresh.devices || []);
       if (arr[0]) state = parseDeviceState(arr[0]);
     } catch (_) { /* best effort */ }
