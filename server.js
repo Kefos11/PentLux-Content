@@ -48,11 +48,24 @@ const VALID_APTS = ['apt49', 'apt50'];
 // channel: usually 0 (use 1 for the second output on a 2-channel device).
 const LIGHTS = {
   apt49: [
-    { key: 'living', name: 'Living room', deviceId: '8caab54c4cc3', channel: 0, type: 'light' },
-    // add more 49 lights here as: { key: 'bedroom', name: 'Bedroom', deviceId: '...', channel: 0, type: 'light' },
+    { key: 'kitchen',    name: 'Kitchen',          deviceId: '8caab54c4cc3', type: 'light' },
+    { key: 'hallway',    name: 'Hallway',          deviceId: '8caab54cf39f', type: 'light' },
+    { key: 'bar',        name: 'Bar',              deviceId: '483fda9198d3', type: 'light' },
+    { key: 'shower',     name: 'Shower',           deviceId: '8caab54cf67e', type: 'light' },
+    { key: 'bed',        name: 'Bed lights',       deviceId: '30c9224b7fd0', type: 'light' },
+    { key: 'living',     name: 'Living room',      deviceId: '441793a852c0', type: 'light' },
+    { key: 'mainled',    name: 'Main LED',         deviceId: 'a5b52b',       type: 'light' },
+    { key: 'kitchenled', name: 'Kitchen LED',      deviceId: 'a68c2d',       type: 'light' },
+    { key: 'mirrorled',  name: 'Mirror LED',       deviceId: 'a57450',       type: 'light' },
+    { key: 'stairsled',  name: 'Stairs LED',       deviceId: 'a6afec',       type: 'light' },
+    { key: 'logoled',    name: 'Logo LED',         deviceId: 'a5b535',       type: 'light' },
+    { key: 'saunaled',   name: 'Sauna LED',        deviceId: 'a56b06',       type: 'light' },
+    { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover' },
+    { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay' },
   ],
   apt50: [
-    // { key: 'living',  name: 'Living room', deviceId: 'PASTE_DEVICE_ID', channel: 0, type: 'relay' },
+    // Apt 50 lights go here once you grab their Device IDs.
+    { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay' },
   ],
 };
 
@@ -70,21 +83,27 @@ function shellyCreds(apt) {
   return {};
 }
 
-// Calls Shelly Cloud to switch a device on/off.
+// Calls Shelly Cloud to switch a device. For covers, "on" = open, "off" = close.
 async function shellyControl(apt, dev, turnOn) {
   const { server, key } = shellyCreds(apt);
   if (!server || !key) throw new Error('Shelly not configured for ' + apt);
-  const path = dev.type === 'light' ? '/device/light/control' : '/device/relay/control';
-  const body = new URLSearchParams({
-    id: dev.deviceId,
-    channel: String(dev.channel ?? 0),
-    turn: turnOn ? 'on' : 'off',
-    auth_key: key,
-  });
+
+  let path, params;
+  if (dev.type === 'cover') {
+    path = '/device/relay/roller/control';
+    params = { id: dev.deviceId, auth_key: key, direction: turnOn ? 'open' : 'close' };
+  } else if (dev.type === 'relay') {
+    path = '/device/relay/control';
+    params = { id: dev.deviceId, channel: String(dev.channel ?? 0), turn: turnOn ? 'on' : 'off', auth_key: key };
+  } else { // 'light', dimmers, RGB
+    path = '/device/light/control';
+    params = { id: dev.deviceId, channel: String(dev.channel ?? 0), turn: turnOn ? 'on' : 'off', auth_key: key };
+  }
+
   const r = await fetch(server.replace(/\/+$/, '') + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
+    body: new URLSearchParams(params),
   });
   return r.json();
 }
