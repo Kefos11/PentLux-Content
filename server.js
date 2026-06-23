@@ -60,7 +60,7 @@ const LIGHTS = {
     { key: 'stairsled',  name: 'Stairs LED',       deviceId: 'a6afec',       type: 'light' },
     { key: 'logoled',    name: 'Logo LED',         deviceId: 'a5b535',       type: 'light' },
     { key: 'saunaled',   name: 'Sauna LED',        deviceId: 'a56b06',       type: 'light' },
-    { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover' },
+    { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover', favPos: 52 },
     { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay' },
   ],
   apt50: [
@@ -185,7 +185,7 @@ app.post('/api/media/:apt', async (req, res) => {
 app.get('/api/lights/:apt', (req, res) => {
   const apt = req.params.apt;
   if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
-  res.json((LIGHTS[apt] || []).map(l => ({ key: l.key, name: l.name, id: l.deviceId, type: l.type || 'switch' })));
+  res.json((LIGHTS[apt] || []).map(l => ({ key: l.key, name: l.name, id: l.deviceId, type: l.type || 'switch', fav: l.favPos })));
 });
 
 // --- LIGHTS: flip one on/off (gated by CONTROL_TOKEN for now) ---
@@ -262,7 +262,15 @@ app.post('/api/control', async (req, res) => {
       resp = await shellyV2(apt, '/v2/devices/api/set/switch', body);
     }
     if (resp && resp.isok === false) return res.status(502).json({ error: 'Shelly refused: ' + JSON.stringify(resp.errors || resp) });
-    res.json({ ok: true, shelly: resp });
+    // Re-read the device so the panel reflects reality (respecting the 1 req/sec limit).
+    let state = null;
+    try {
+      await new Promise(r => setTimeout(r, 1100));
+      const fresh = await shellyV2(apt, '/v2/devices/api/get', { ids: [id], select: ['status'] });
+      const arr = Array.isArray(fresh) ? fresh : (fresh.data || fresh.devices || []);
+      if (arr[0]) state = parseDeviceState(arr[0]);
+    } catch (_) { /* best effort */ }
+    res.json({ ok: true, state });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
