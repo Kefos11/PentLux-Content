@@ -320,8 +320,8 @@ const IR = {
       { key: 'projector', name: 'Projector', kind: 'projector', remote: 'ebb070a5474d6159eftm9x', cat: 6, idx: 5595, onKey: 'PowerOn', offKey: 'PowerOff', offTimes: 2 },
       { key: 'surround', name: 'Surround', kind: 'toggle', remote: 'eb4c91cca43cfcbc5fd8y5', cat: 7, idx: 10282, toggleKey: 'power', raw: true },
       { key: 'fireplace_living', name: 'Living room fireplace', kind: 'pair', cat: 1, raw: true,
-        on:  { remote: 'eb01b3ff902a6ff4d57ewm', idx: 1743855011, key: 'Power' },
-        off: { remote: 'eb7d0937d77f09aa05zdnn', idx: 1743854589, key: 'Power' } },
+        on:  { remote: 'eb7d0937d77f09aa05zdnn', idx: 1743854589, key: 'Power' },
+        off: { remote: 'eb01b3ff902a6ff4d57ewm', idx: 1743855011, key: 'Power' } },
       { key: 'fireplace_bedroom', name: 'Bedroom fireplace', kind: 'pair', cat: 1, raw: true, blaster: 'eb872d016fa30912d5a912',
         on:  { remote: 'eb33d2e7f6e767c744nuxb', idx: 1743859178, key: 'Power' },
         off: { remote: 'ebf144a6dcafa6d54cox7n', idx: 1743859208, key: 'Power' } },
@@ -413,6 +413,12 @@ app.post('/api/tuya/send', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
+});
+
+// DIAGNOSTIC: list learned codes for a DIY remote (category 999)
+app.get('/api/tuya/learn/:blaster/:remote', async (req, res) => {
+  try { res.json(await tuyaRequest('GET', `/v2.0/infrareds/${req.params.blaster}/remotes/${req.params.remote}/learning-codes`, null)); }
+  catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
 // DIAGNOSTIC (open in a browser): fire one key, see if the device reacts
