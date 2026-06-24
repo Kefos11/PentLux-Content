@@ -319,9 +319,9 @@ const IR = {
     devices: [
       { key: 'projector', name: 'Projector', kind: 'projector', remote: 'ebb070a5474d6159eftm9x', cat: 6, idx: 5595, onKey: 'PowerOn', offKey: 'PowerOff', offTimes: 2 },
       { key: 'surround', name: 'Surround', kind: 'toggle', remote: 'eb4c91cca43cfcbc5fd8y5', cat: 7, idx: 10282, toggleKey: 'power', raw: true },
-      { key: 'fireplace_living', name: 'Living room fireplace', kind: 'pair', cat: 1, raw: true,
-        on:  { remote: 'eb7d0937d77f09aa05zdnn', idx: 1743854589, key: 'Power' },
-        off: { remote: 'eb01b3ff902a6ff4d57ewm', idx: 1743855011, key: 'Power' } },
+      { key: 'fireplace_living', name: 'Living room fireplace', kind: 'diy', remote: 'eb747321792483fb6f4zln',
+        onCode: 'fc22a81133023302f30173021302320214025202f4015202f4017102f3015502120232021502b7061202b8061402b806f401b5061402b606f501d806f401d606f401b806f401710212029906130252021302b806f4015102f40152021402510216023202f401b50614027102f401b80614025102f401d606f501b7061302b706f401d706f4013c9e0a230909f4013075',
+        offCode: '2023871132025402f4015102f40153021302530215023202f4017102f4015202f40153021502b7061302b706f401d70614029906f401d606f501d6061602b606f501b706f401b80613027202f5015002f601d60614023302f4017102f5015202f4015202130252021502b806f401b8061202530213029a061202b806f401d8061202b806f401429e0823e908f4013075' },
       { key: 'fireplace_bedroom', name: 'Bedroom fireplace', kind: 'pair', cat: 1, raw: true, blaster: 'eb872d016fa30912d5a912',
         on:  { remote: 'eb33d2e7f6e767c744nuxb', idx: 1743859178, key: 'Power' },
         off: { remote: 'ebf144a6dcafa6d54cox7n', idx: 1743859208, key: 'Power' } },
@@ -341,6 +341,9 @@ async function irSend(blaster, dev, action) {
       const n = dev.offTimes || 1;
       for (let i = 0; i < n; i++) { out = await fire(dev.remote, dev.idx, dev.offKey); if (i < n - 1) await new Promise(r => setTimeout(r, 1200)); }
     } else out = await fire(dev.remote, dev.idx, dev.onKey);
+  } else if (dev.kind === 'diy') {
+    const code = action === 'off' ? dev.offCode : dev.onCode;
+    out = await tuyaRequest('POST', `/v2.0/infrareds/${bl}/remotes/${dev.remote}/learning-codes`, { code });
   } else if (dev.kind === 'pair') {
     const side = action === 'off' ? dev.off : dev.on;
     out = await fire(side.remote, side.idx, side.key);
