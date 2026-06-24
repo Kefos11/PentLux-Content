@@ -301,24 +301,45 @@ const TUYA_HOSTS = { us: 'https://openapi.tuyaus.com', eu: 'https://openapi.tuya
 const TUYA_HOST = TUYA_HOSTS[process.env.TUYA_REGION || 'us'] || TUYA_HOSTS.us;
 let _tuyaTok = { token: null, exp: 0 };
 
-// IR devices, grouped by apartment. Fireplace = a pair of STBs (one fires ON, one OFF).
-// 'off2' means the projector turns off by sending its key twice (fallback if PowerOff is missing).
+// IR devices per apartment. Projector: On=PowerOn x1, Off=PowerOff x2 (Optoma/Epson confirm-press).
+// Fireplace: single toggle (Power). Surround has no library power key, so it rides with the projector.
 const IR = {
   apt49: {
     blaster: 'eba8d2c7eaf3305853ici8',
-    projector: { remote: 'eb4cdd878cffc95c13goai', onKey: 'PowerOn', offKey: 'PowerOff', toggleKey: 'power' },
-    surround:  { remote: 'eb5b9e2dce0416317c19jm', toggleKey: 'power' },
-    fireplace: { onRemote: 'eb9b430b91c25da7cfgvyu', offRemote: 'eb4db3cddf5e956c3bweln', key: 'power' },
+    devices: [
+      { key: 'projector', name: 'Projector', kind: 'projector', remote: 'eb4cdd878cffc95c13goai', cat: 6, idx: 12270, onKey: 'PowerOn', offKey: 'PowerOff', offTimes: 2 },
+      { key: 'fireplace', name: 'Fireplace', kind: 'toggle', remote: 'eb9b430b91c25da7cfgvyu', cat: 1, idx: 1743857319, toggleKey: 'Power', raw: true },
+    ],
   },
   apt50: {
     blaster: 'eb876e291c2bb888944hxa',
-    projector: { remote: 'ebb070a5474d6159eftm9x', onKey: 'PowerOn', offKey: 'PowerOff', toggleKey: 'power' },
-    surround:  { remote: 'eb4c91cca43cfcbc5fd8y5', toggleKey: 'power' },
-    fireplace: { onRemote: 'eb01b3ff902a6ff4d57ewm', offRemote: 'eb7d0937d77f09aa05zdnn', key: 'power' },
-    // bedroom fireplace lives on the second blaster:
-    bedroomFireplaceBlaster: 'eb872d016fa30912d5a912',
+    devices: [
+      { key: 'projector', name: 'Projector', kind: 'projector', remote: 'ebb070a5474d6159eftm9x', cat: 6, idx: 5595, onKey: 'PowerOn', offKey: 'PowerOff', offTimes: 2 },
+      { key: 'fireplace_living', name: 'Living room fireplace', kind: 'toggle', remote: 'eb01b3ff902a6ff4d57ewm', cat: 1, idx: 1743855011, toggleKey: 'Power', raw: true },
+      // bedroom fireplace lives on blaster eb872d016fa30912d5a912 — add once its remote id is known
+    ],
   },
 };
+
+async function irSend(blaster, dev, action) {
+  // returns the last Tuya response
+  let keys = [];
+  if (dev.kind === 'projector') {
+    keys = action === 'off'
+      ? Array(dev.offTimes || 1).fill(dev.offKey)
+      : [dev.onKey];
+  } else { // toggle
+    keys = [dev.toggleKey];
+  }
+  let out;
+  const endpoint = dev.raw ? 'raw/command' : 'command';
+  for (let i = 0; i < keys.length; i++) {
+    out = await tuyaRequest('POST', `/v2.0/infrareds/${blaster}/remotes/${dev.remote}/${endpoint}`,
+      { categoryId: dev.cat, remoteIndex: dev.idx, key: keys[i] });
+    if (i < keys.length - 1) await new Promise(r => setTimeout(r, 1200));
+  }
+  return out;
+}
 
 const _sha256 = s => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const _hmac = (s, secret) => crypto.createHmac('sha256', secret).update(s, 'utf8').digest('hex').toUpperCase();
@@ -398,6 +419,31 @@ app.get('/api/tuya/fire/:blaster/:remote/:key', async (req, res) => {
     const out = await tuyaRequest('POST', `/v2.0/infrareds/${blaster}/remotes/${remote}/${endpoint}`, body);
     res.json(out);
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// LIST the IR devices for an apartment (for the panel)
+app.get('/api/ir/:apt', (req, res) => {
+  const grp = IR[req.params.apt];
+  if (!grp) return res.json([]);
+  res.json(grp.devices.map(d => ({ key: d.key, name: d.name, kind: d.kind })));
+});
+
+// CONTROL an IR device (gated by CONTROL_TOKEN). action: 'on' | 'off' | 'toggle'
+app.post('/api/ir', async (req, res) => {
+  const { apt, key, action, token } = req.body || {};
+  const need = process.env.CONTROL_TOKEN || '';
+  if (need && token !== need) return res.status(401).json({ error: 'unauthorized' });
+  const grp = IR[apt];
+  if (!grp) return res.status(404).json({ error: 'unknown apartment' });
+  const dev = grp.devices.find(d => d.key === key);
+  if (!dev) return res.status(404).json({ error: 'unknown device' });
+  try {
+    const out = await irSend(grp.blaster, dev, action);
+    if (out && out.success === false) return res.status(502).json({ error: 'Tuya refused: ' + JSON.stringify(out) });
+    res.json({ ok: true, tuya: out });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
 });
 
 app.get('/', (_req, res) => res.send('PentLux content API is running.'));
