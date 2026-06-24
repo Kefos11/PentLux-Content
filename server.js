@@ -301,6 +301,25 @@ const TUYA_HOSTS = { us: 'https://openapi.tuyaus.com', eu: 'https://openapi.tuya
 const TUYA_HOST = TUYA_HOSTS[process.env.TUYA_REGION || 'us'] || TUYA_HOSTS.us;
 let _tuyaTok = { token: null, exp: 0 };
 
+// IR devices, grouped by apartment. Fireplace = a pair of STBs (one fires ON, one OFF).
+// 'off2' means the projector turns off by sending its key twice (fallback if PowerOff is missing).
+const IR = {
+  apt49: {
+    blaster: 'eba8d2c7eaf3305853ici8',
+    projector: { remote: 'eb4cdd878cffc95c13goai', onKey: 'PowerOn', offKey: 'PowerOff', toggleKey: 'power' },
+    surround:  { remote: 'eb5b9e2dce0416317c19jm', toggleKey: 'power' },
+    fireplace: { onRemote: 'eb9b430b91c25da7cfgvyu', offRemote: 'eb4db3cddf5e956c3bweln', key: 'power' },
+  },
+  apt50: {
+    blaster: 'eb876e291c2bb888944hxa',
+    projector: { remote: 'ebb070a5474d6159eftm9x', onKey: 'PowerOn', offKey: 'PowerOff', toggleKey: 'power' },
+    surround:  { remote: 'eb4c91cca43cfcbc5fd8y5', toggleKey: 'power' },
+    fireplace: { onRemote: 'eb01b3ff902a6ff4d57ewm', offRemote: 'eb7d0937d77f09aa05zdnn', key: 'power' },
+    // bedroom fireplace lives on the second blaster:
+    bedroomFireplaceBlaster: 'eb872d016fa30912d5a912',
+  },
+};
+
 const _sha256 = s => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const _hmac = (s, secret) => crypto.createHmac('sha256', secret).update(s, 'utf8').digest('hex').toUpperCase();
 
@@ -364,6 +383,15 @@ app.post('/api/tuya/send', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
+});
+
+// DIAGNOSTIC (open in a browser): fire one key, see if the device reacts
+app.get('/api/tuya/fire/:blaster/:remote/:key', async (req, res) => {
+  const { blaster, remote, key } = req.params;
+  try {
+    const out = await tuyaRequest('POST', `/v2.0/infrareds/${blaster}/remotes/${remote}/command`, { key });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
 app.get('/', (_req, res) => res.send('PentLux content API is running.'));
