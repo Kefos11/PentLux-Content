@@ -65,7 +65,20 @@ const LIGHTS = {
     { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1 },
   ],
   apt50: [
-    // Apt 50 lights go here once you grab their Device IDs.
+    { key: 'bar',          name: 'Bar lights',           deviceId: '8caab54cf1e5', type: 'light' },
+    { key: 'living',       name: 'Living room lights',   deviceId: '483fda91a886', type: 'light' },
+    { key: 'kitchenrad',   name: 'Kitchen radiator light', deviceId: '8caab54c5210', type: 'light' },
+    { key: 'balcony',      name: 'Wall balcony lights',  deviceId: '8caab54cf1e3', type: 'light' },
+    { key: 'bedroom',      name: 'Bedroom lights',       deviceId: '3494547aa257', type: 'switch', channel: 0 },
+    { key: 'hottub',       name: 'Hot tub lights',       deviceId: '3494547aa257', type: 'switch', channel: 1 },
+    { key: 'fireplaceled', name: 'Fireplace LED',        deviceId: 'a696dc', type: 'rgb' },
+    { key: 'barled',       name: 'Bar LED',              deviceId: '6f4a9b', type: 'rgb' },
+    { key: 'kitchenled',   name: 'Kitchen LED',          deviceId: 'a5b16e', type: 'rgb' },
+    { key: 'bedroomled',   name: 'Bedroom LED',          deviceId: 'a57440', type: 'rgb' },
+    { key: 'stairsled',    name: 'Stairs LED',           deviceId: 'e868e7f38cf4', type: 'rgb' },
+    { key: 'saunaled',     name: 'Sauna LED',            deviceId: 'a56a3c', type: 'rgb' },
+    { key: 'wardrobeled',  name: 'Wardrobe LED',         deviceId: 'a69c16', type: 'rgb' },
+    { key: 'projector',    name: 'Projector screen',     deviceId: '34945477c20a', type: 'cover', favPos: 72 },
     { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1 },
   ],
 };
@@ -309,9 +322,9 @@ const IR = {
     devices: [
       { key: 'projector', name: 'Projector', kind: 'projector', remote: 'eb4cdd878cffc95c13goai', cat: 6, idx: 12270, onKey: 'PowerOn', offKey: 'PowerOff', offTimes: 2 },
       { key: 'surround', name: 'Surround', kind: 'toggle', remote: 'eb5b9e2dce0416317c19jm', cat: 7, idx: 10282, toggleKey: 'power', raw: true },
-      { key: 'fireplace', name: 'Fireplace', kind: 'pair', cat: 1, raw: true,
-        on:  { remote: 'eb4db3cddf5e956c3bweln', idx: 1743857161, key: 'Power' },
-        off: { remote: 'eb9b430b91c25da7cfgvyu', idx: 1743857319, key: 'Power' } },
+      { key: 'fireplace', name: 'Fireplace', kind: 'diy', remote: 'eb63a3783f3f9f702aqsnl',
+        onCode: 'fd22e211f4015102f4017102d4017102f4015202f3017102f4015102f4017102f4015102f401d506d501f406d501d506f401d506d501f406d501f406d501d506f401d506d4019002f401b606f4017102d401f506f4015102f4015102f4017102f4015102f401d606f3017102d501d506f4017102f301d606d401d506d501f506f301d606f301439ec7222709f4013075',
+        offCode: '7e220312d60190029501b002b5019102b501b002b6019102d3017302d401b002b5017202b5011607d401f606d501f506b601160795011607d401f606b501f606b60155079501f606b501b102b501900296011507f4017102b601b002b5019102b601ce0297019002b601f606b5011507b6019102d401150797013507b501f60695011707d3015e9ead222909d4013075' },
     ],
   },
   apt50: {
@@ -322,9 +335,9 @@ const IR = {
       { key: 'fireplace_living', name: 'Living room fireplace', kind: 'diy', remote: 'eb747321792483fb6f4zln',
         onCode: 'fc22a81133023302f30173021302320214025202f4015202f4017102f3015502120232021502b7061202b8061402b806f401b5061402b606f501d806f401d606f401b806f401710212029906130252021302b806f4015102f40152021402510216023202f401b50614027102f401b80614025102f401d606f501b7061302b706f401d706f4013c9e0a230909f4013075',
         offCode: '2023871132025402f4015102f40153021302530215023202f4017102f4015202f40153021502b7061302b706f401d70614029906f401d606f501d6061602b606f501b706f401b80613027202f5015002f601d60614023302f4017102f5015202f4015202130252021502b806f401b8061202530213029a061202b806f401d8061202b806f401429e0823e908f4013075' },
-      { key: 'fireplace_bedroom', name: 'Bedroom fireplace', kind: 'pair', cat: 1, raw: true, blaster: 'eb872d016fa30912d5a912',
-        on:  { remote: 'eb33d2e7f6e767c744nuxb', idx: 1743859178, key: 'Power' },
-        off: { remote: 'ebf144a6dcafa6d54cox7n', idx: 1743859208, key: 'Power' } },
+      { key: 'fireplace_bedroom', name: 'Bedroom fireplace', kind: 'diy', blaster: 'eb872d016fa30912d5a912', remote: 'eb4e047b055307dba6ku23',
+        onCode: '1a23881112025302120253021202320215027102d3015302f401710213023202f3017302f301b7061302d606f501b60632029706f401b8061402b50633029806f301d606140233021202b706150230021402b706f5017102d301710233023202d6017102f401d406f4015202f401d70612025302f301b6061502b506330278061502d506f401509e2a23c90812023075',
+        offCode: '1c23c311f40153021202530212023302f3017202f40153021202320215025002f50150021502b5061402b7061202b706f401b7061402b506f401d706f301d6061302b706d601d4061302520213023202330299061202320232023302130232021502500215025002f401b8061202b70613025202f401b7061202b70615029506330297061302539e2723c908f4013075' },
     ],
   },
 };
