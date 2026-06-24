@@ -386,14 +386,16 @@ app.post('/api/tuya/send', async (req, res) => {
 });
 
 // DIAGNOSTIC (open in a browser): fire one key, see if the device reacts
-// optional query: ?cat=6&idx=12270  (category_id and remote_index)
+// optional query: ?cat=6&idx=12270  (categoryId and remoteIndex)
+// optional query: ?raw=1  -> use the raw/command endpoint (for non-standard keys like some power toggles)
 app.get('/api/tuya/fire/:blaster/:remote/:key', async (req, res) => {
   const { blaster, remote, key } = req.params;
   const body = { key };
   if (req.query.cat != null) body.categoryId = Number(req.query.cat);
   if (req.query.idx != null) body.remoteIndex = Number(req.query.idx);
+  const endpoint = req.query.raw ? 'raw/command' : 'command';
   try {
-    const out = await tuyaRequest('POST', `/v2.0/infrareds/${blaster}/remotes/${remote}/command`, body);
+    const out = await tuyaRequest('POST', `/v2.0/infrareds/${blaster}/remotes/${remote}/${endpoint}`, body);
     res.json(out);
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
