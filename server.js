@@ -369,8 +369,8 @@ app.post('/api/tuya/send', async (req, res) => {
   if (!blaster || !remote || !key) return res.status(400).json({ error: 'need blaster, remote, key' });
   const path = `/v2.0/infrareds/${blaster}/remotes/${remote}/command`;
   const payload = { key };
-  if (category_id != null) payload.category_id = category_id;
-  if (remote_index != null) payload.remote_index = remote_index;
+  if (category_id != null) payload.categoryId = category_id;
+  if (remote_index != null) payload.remoteIndex = remote_index;
   try {
     const n = Math.max(1, Math.min(3, times || 1));
     let out;
@@ -390,8 +390,8 @@ app.post('/api/tuya/send', async (req, res) => {
 app.get('/api/tuya/fire/:blaster/:remote/:key', async (req, res) => {
   const { blaster, remote, key } = req.params;
   const body = { key };
-  if (req.query.cat != null) body.category_id = Number(req.query.cat);
-  if (req.query.idx != null) body.remote_index = Number(req.query.idx);
+  if (req.query.cat != null) body.categoryId = Number(req.query.cat);
+  if (req.query.idx != null) body.remoteIndex = Number(req.query.idx);
   try {
     const out = await tuyaRequest('POST', `/v2.0/infrareds/${blaster}/remotes/${remote}/command`, body);
     res.json(out);
