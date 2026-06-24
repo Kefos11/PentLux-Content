@@ -308,35 +308,40 @@ const IR = {
     blaster: 'eba8d2c7eaf3305853ici8',
     devices: [
       { key: 'projector', name: 'Projector', kind: 'projector', remote: 'eb4cdd878cffc95c13goai', cat: 6, idx: 12270, onKey: 'PowerOn', offKey: 'PowerOff', offTimes: 2 },
-      { key: 'fireplace', name: 'Fireplace', kind: 'toggle', remote: 'eb9b430b91c25da7cfgvyu', cat: 1, idx: 1743857319, toggleKey: 'Power', raw: true },
+      { key: 'surround', name: 'Surround', kind: 'toggle', remote: 'eb5b9e2dce0416317c19jm', cat: 7, idx: 10282, toggleKey: 'power', raw: true },
+      { key: 'fireplace', name: 'Fireplace', kind: 'pair', cat: 1, raw: true,
+        on:  { remote: 'eb4db3cddf5e956c3bweln', idx: 1743857161, key: 'Power' },
+        off: { remote: 'eb9b430b91c25da7cfgvyu', idx: 1743857319, key: 'Power' } },
     ],
   },
   apt50: {
     blaster: 'eb876e291c2bb888944hxa',
     devices: [
       { key: 'projector', name: 'Projector', kind: 'projector', remote: 'ebb070a5474d6159eftm9x', cat: 6, idx: 5595, onKey: 'PowerOn', offKey: 'PowerOff', offTimes: 2 },
-      { key: 'fireplace_living', name: 'Living room fireplace', kind: 'toggle', remote: 'eb01b3ff902a6ff4d57ewm', cat: 1, idx: 1743855011, toggleKey: 'Power', raw: true },
-      // bedroom fireplace lives on blaster eb872d016fa30912d5a912 — add once its remote id is known
+      { key: 'surround', name: 'Surround', kind: 'toggle', remote: 'eb4c91cca43cfcbc5fd8y5', cat: 7, idx: 10282, toggleKey: 'power', raw: true },
+      { key: 'fireplace_living', name: 'Living room fireplace', kind: 'pair', cat: 1, raw: true,
+        on:  { remote: 'eb01b3ff902a6ff4d57ewm', idx: 1743855011, key: 'Power' },
+        off: { remote: 'eb7d0937d77f09aa05zdnn', idx: 1743854589, key: 'Power' } },
     ],
   },
 };
 
 async function irSend(blaster, dev, action) {
-  // returns the last Tuya response
-  let keys = [];
-  if (dev.kind === 'projector') {
-    keys = action === 'off'
-      ? Array(dev.offTimes || 1).fill(dev.offKey)
-      : [dev.onKey];
-  } else { // toggle
-    keys = [dev.toggleKey];
-  }
-  let out;
   const endpoint = dev.raw ? 'raw/command' : 'command';
-  for (let i = 0; i < keys.length; i++) {
-    out = await tuyaRequest('POST', `/v2.0/infrareds/${blaster}/remotes/${dev.remote}/${endpoint}`,
-      { categoryId: dev.cat, remoteIndex: dev.idx, key: keys[i] });
-    if (i < keys.length - 1) await new Promise(r => setTimeout(r, 1200));
+  const fire = (remote, idx, key) => tuyaRequest('POST',
+    `/v2.0/infrareds/${blaster}/remotes/${remote}/${endpoint}`,
+    { categoryId: dev.cat, remoteIndex: idx, key });
+  let out;
+  if (dev.kind === 'projector') {
+    if (action === 'off') {
+      const n = dev.offTimes || 1;
+      for (let i = 0; i < n; i++) { out = await fire(dev.remote, dev.idx, dev.offKey); if (i < n - 1) await new Promise(r => setTimeout(r, 1200)); }
+    } else out = await fire(dev.remote, dev.idx, dev.onKey);
+  } else if (dev.kind === 'pair') {
+    const side = action === 'off' ? dev.off : dev.on;
+    out = await fire(side.remote, side.idx, side.key);
+  } else { // toggle
+    out = await fire(dev.remote, dev.idx, dev.toggleKey);
   }
   return out;
 }
