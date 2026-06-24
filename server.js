@@ -322,14 +322,18 @@ const IR = {
       { key: 'fireplace_living', name: 'Living room fireplace', kind: 'pair', cat: 1, raw: true,
         on:  { remote: 'eb01b3ff902a6ff4d57ewm', idx: 1743855011, key: 'Power' },
         off: { remote: 'eb7d0937d77f09aa05zdnn', idx: 1743854589, key: 'Power' } },
+      { key: 'fireplace_bedroom', name: 'Bedroom fireplace', kind: 'pair', cat: 1, raw: true, blaster: 'eb872d016fa30912d5a912',
+        on:  { remote: 'eb33d2e7f6e767c744nuxb', idx: 1743859178, key: 'Power' },
+        off: { remote: 'ebf144a6dcafa6d54cox7n', idx: 1743859208, key: 'Power' } },
     ],
   },
 };
 
 async function irSend(blaster, dev, action) {
+  const bl = dev.blaster || blaster;
   const endpoint = dev.raw ? 'raw/command' : 'command';
   const fire = (remote, idx, key) => tuyaRequest('POST',
-    `/v2.0/infrareds/${blaster}/remotes/${remote}/${endpoint}`,
+    `/v2.0/infrareds/${bl}/remotes/${remote}/${endpoint}`,
     { categoryId: dev.cat, remoteIndex: idx, key });
   let out;
   if (dev.kind === 'projector') {
