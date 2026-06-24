@@ -20,6 +20,7 @@
 
 const express = require('express');
 const { Pool } = require('pg');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -288,6 +289,79 @@ app.post('/api/control', async (req, res) => {
     res.json({ ok: true, state });
   } catch (e) {
     console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// ===== TUYA (SmartLife) IR control =====
+// Env vars:
+//   TUYA_ACCESS_ID, TUYA_SECRET  - from your Tuya Cloud project (Overview tab)
+//   TUYA_REGION                  - us | eu | weu | in  (yours is 'us')
+const TUYA_HOSTS = { us: 'https://openapi.tuyaus.com', eu: 'https://openapi.tuyaeu.com', weu: 'https://openapi-weaz.tuyaeu.com', in: 'https://openapi.tuyain.com' };
+const TUYA_HOST = TUYA_HOSTS[process.env.TUYA_REGION || 'us'] || TUYA_HOSTS.us;
+let _tuyaTok = { token: null, exp: 0 };
+
+const _sha256 = s => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+const _hmac = (s, secret) => crypto.createHmac('sha256', secret).update(s, 'utf8').digest('hex').toUpperCase();
+
+async function tuyaRequest(method, path, body) {
+  const id = process.env.TUYA_ACCESS_ID, secret = process.env.TUYA_SECRET;
+  if (!id || !secret) throw new Error('Tuya not configured (TUYA_ACCESS_ID / TUYA_SECRET)');
+  const isToken = path.startsWith('/v1.0/token');
+  const access = isToken ? '' : await tuyaToken();
+  const t = Date.now().toString();
+  const bodyStr = body ? JSON.stringify(body) : '';
+  const stringToSign = `${method}\n${_sha256(bodyStr)}\n\n${path}`;
+  const sign = _hmac(id + access + t + stringToSign, secret);
+  const headers = { client_id: id, sign, t, sign_method: 'HMAC-SHA256', 'Content-Type': 'application/json' };
+  if (!isToken) headers.access_token = access;
+  const r = await fetch(TUYA_HOST + path, { method, headers, body: bodyStr || undefined });
+  return r.json();
+}
+
+async function tuyaToken() {
+  if (_tuyaTok.token && Date.now() < _tuyaTok.exp) return _tuyaTok.token;
+  const res = await tuyaRequest('GET', '/v1.0/token?grant_type=1', null);
+  if (res && res.success && res.result) {
+    _tuyaTok.token = res.result.access_token;
+    _tuyaTok.exp = Date.now() + (res.result.expire_time - 60) * 1000;
+    return _tuyaTok.token;
+  }
+  throw new Error('Tuya token failed: ' + JSON.stringify(res));
+}
+
+// DIAGNOSTIC (open in a browser): list the remotes under an IR blaster
+app.get('/api/tuya/remotes/:blaster', async (req, res) => {
+  try { res.json(await tuyaRequest('GET', `/v2.0/infrareds/${req.params.blaster}/remotes`, null)); }
+  catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// DIAGNOSTIC: list the keys (buttons) of one remote
+app.get('/api/tuya/keys/:blaster/:remote', async (req, res) => {
+  try { res.json(await tuyaRequest('GET', `/v2.0/infrareds/${req.params.blaster}/remotes/${req.params.remote}/keys`, null)); }
+  catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+// SEND an IR key (gated by CONTROL_TOKEN). times=2 sends it twice (projector off).
+app.post('/api/tuya/send', async (req, res) => {
+  const { blaster, remote, key, category_id, remote_index, times, token } = req.body || {};
+  const need = process.env.CONTROL_TOKEN || '';
+  if (need && token !== need) return res.status(401).json({ error: 'unauthorized' });
+  if (!blaster || !remote || !key) return res.status(400).json({ error: 'need blaster, remote, key' });
+  const path = `/v2.0/infrareds/${blaster}/remotes/${remote}/command`;
+  const payload = { key };
+  if (category_id != null) payload.category_id = category_id;
+  if (remote_index != null) payload.remote_index = remote_index;
+  try {
+    const n = Math.max(1, Math.min(3, times || 1));
+    let out;
+    for (let i = 0; i < n; i++) {
+      out = await tuyaRequest('POST', path, payload);
+      if (i < n - 1) await new Promise(r => setTimeout(r, 500));
+    }
+    if (out && out.success === false) return res.status(502).json({ error: 'Tuya refused: ' + JSON.stringify(out) });
+    res.json({ ok: true, tuya: out });
+  } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
 });
