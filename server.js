@@ -198,6 +198,110 @@ app.post('/api/media/:apt', async (req, res) => {
   }
 });
 
+// ===== RESERVATIONS =====
+const onlyDigits = s => String(s || '').replace(/[^\d]/g, '');
+const TOKEN_CHARS = 'abcdefghijkmnpqrstuvwxyz23456789'; // no ambiguous 0/o/1/l
+function makeToken(n = 7) {
+  let t = '';
+  for (let i = 0; i < n; i++) t += TOKEN_CHARS[Math.floor(Math.random() * TOKEN_CHARS.length)];
+  return t;
+}
+const isAdmin = req => ADMIN_TOKEN && (req.headers.authorization === 'Bearer ' + ADMIN_TOKEN);
+
+// hours offset helper for defaults
+function defReveal(checkin) { return checkin ? new Date(new Date(checkin).getTime() - 3600e3) : null; }
+function defUnveal(checkout) { return checkout ? new Date(new Date(checkout).getTime() + 3600e3) : null; }
+
+// CREATE (admin)
+app.post('/api/reservations', async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
+  const b = req.body || {};
+  const apt = VALID_APTS.includes(b.apt) ? b.apt : 'apt49';
+  const token = makeToken(7);
+  const reveal = b.reveal_at || defReveal(b.checkin);
+  const unveal = b.unveal_at || defUnveal(b.checkout);
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO guest_links (token, guest_name, guest_phone, apt, checkin, checkout, reveal_at, unveal_at, door_code, notes, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active') RETURNING *`,
+      [token, b.guest_name || '', onlyDigits(b.guest_phone), apt, b.checkin || null, b.checkout || null,
+       reveal, unveal, b.door_code || '', b.notes || '']);
+    res.json({ ok: true, reservation: rows[0] });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
+});
+
+// EDIT (admin) — any subset of fields; recomputes reveal/unveal only if explicitly sent
+app.put('/api/reservations/:id', async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
+  const b = req.body || {};
+  const fields = [], vals = []; let i = 1;
+  const set = (col, val) => { fields.push(`${col} = $${i++}`); vals.push(val); };
+  if (b.guest_name != null) set('guest_name', b.guest_name);
+  if (b.guest_phone != null) set('guest_phone', onlyDigits(b.guest_phone));
+  if (b.apt != null && VALID_APTS.includes(b.apt)) set('apt', b.apt);
+  if (b.checkin != null) set('checkin', b.checkin || null);
+  if (b.checkout != null) set('checkout', b.checkout || null);
+  if (b.reveal_at != null) set('reveal_at', b.reveal_at || null);
+  if (b.unveal_at != null) set('unveal_at', b.unveal_at || null);
+  if (b.door_code != null) set('door_code', b.door_code);
+  if (b.notes != null) set('notes', b.notes);
+  if (b.status != null) set('status', b.status === 'cancelled' ? 'cancelled' : 'active');
+  if (!fields.length) return res.json({ ok: true, unchanged: true });
+  vals.push(req.params.id);
+  try {
+    const { rows } = await pool.query(
+      `UPDATE guest_links SET ${fields.join(', ')}, updated_at = now() WHERE id = $${i} RETURNING *`, vals);
+    if (!rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true, reservation: rows[0] });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
+});
+
+// LIST (admin)
+app.get('/api/reservations', async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const { rows } = await pool.query('SELECT * FROM guest_links ORDER BY checkin DESC NULLS LAST, created_at DESC');
+    res.json(rows);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
+});
+
+// GUEST PORTAL read (public, by link token) — time-gated, never leaks code early
+app.get('/api/reservation/:token', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM guest_links WHERE token = $1', [req.params.token]);
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: 'not found' });
+    const now = Date.now();
+    const cancelled = r.status === 'cancelled';
+    const revealed = !cancelled && r.reveal_at && r.unveal_at &&
+      now >= new Date(r.reveal_at).getTime() && now <= new Date(r.unveal_at).getTime();
+    const expired = r.unveal_at && now > new Date(r.unveal_at).getTime();
+    res.json({
+      guest_name: r.guest_name, apt: r.apt,
+      checkin: r.checkin, checkout: r.checkout,
+      reveal_at: r.reveal_at, unveal_at: r.unveal_at,
+      status: r.status, cancelled, revealed, expired,
+      door_code: revealed ? r.door_code : null,
+      controls: revealed,
+    });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
+});
+
+// LARA read (by phone) — returns context for the bot. Protected by ADMIN_TOKEN.
+app.get('/api/reservation/by-phone/:phone', async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const phone = onlyDigits(req.params.phone);
+    const { rows } = await pool.query(
+      `SELECT * FROM guest_links WHERE guest_phone = $1 AND status = 'active'
+       ORDER BY checkin DESC NULLS LAST LIMIT 1`, [phone]);
+    const r = rows[0];
+    if (!r) return res.json({ found: false });
+    res.json({ found: true, guest_name: r.guest_name, apt: r.apt,
+      checkin: r.checkin, checkout: r.checkout, door_code: r.door_code, notes: r.notes, token: r.token });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
+});
+
 // --- LIGHTS: list what's configured for an apartment (public; just names) ---
 app.get('/api/lights/:apt', (req, res) => {
   const apt = req.params.apt;
