@@ -49,37 +49,39 @@ const VALID_APTS = ['apt49', 'apt50'];
 // channel: usually 0 (use 1 for the second output on a 2-channel device).
 const LIGHTS = {
   apt49: [
-    { key: 'kitchen',    name: 'Kitchen',          deviceId: '8caab54c4cc3', type: 'light' },
-    { key: 'hallway',    name: 'Hallway',          deviceId: '8caab54cf39f', type: 'light' },
-    { key: 'bar',        name: 'Bar',              deviceId: '483fda9198d3', type: 'light' },
-    { key: 'shower',     name: 'Shower',           deviceId: '8caab54cf67e', type: 'light' },
-    { key: 'bed',        name: 'Bed lights',       deviceId: '30c9224b7fd0', type: 'light' },
-    { key: 'living',     name: 'Living room',      deviceId: '441793a852c0', type: 'light' },
-    { key: 'mainled',    name: 'Main LED',         deviceId: 'a5b52b',       type: 'light' },
-    { key: 'kitchenled', name: 'Kitchen LED',      deviceId: 'a68c2d',       type: 'light' },
-    { key: 'mirrorled',  name: 'Mirror LED',       deviceId: 'a57450',       type: 'light' },
-    { key: 'stairsled',  name: 'Stairs LED',       deviceId: 'a6afec',       type: 'light' },
-    { key: 'logoled',    name: 'Logo LED',         deviceId: 'a5b535',       type: 'light' },
-    { key: 'saunaled',   name: 'Sauna LED',        deviceId: 'a56b06',       type: 'light' },
-    { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover', favPos: 51 },
-    { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1 },
+    { key: 'kitchen',    name: 'Kitchen',          deviceId: '8caab54c4cc3', type: 'light', room: 'Kitchen' },
+    { key: 'hallway',    name: 'Hallway',          deviceId: '8caab54cf39f', type: 'light', room: 'Kitchen' },
+    { key: 'bar',        name: 'Bar',              deviceId: '483fda9198d3', type: 'light', room: 'Kitchen' },
+    { key: 'shower',     name: 'Shower',           deviceId: '8caab54cf67e', type: 'light', room: 'Spa' },
+    { key: 'bed',        name: 'Bed lights',       deviceId: '30c9224b7fd0', type: 'light', room: 'Living room & bedroom' },
+    { key: 'living',     name: 'Living room',      deviceId: '441793a852c0', type: 'light', room: 'Living room & bedroom' },
+    { key: 'mainled',    name: 'Main LED',         deviceId: 'a5b52b',       type: 'light', room: 'Living room & bedroom' },
+    { key: 'kitchenled', name: 'Kitchen LED',      deviceId: 'a68c2d',       type: 'light', room: 'Kitchen' },
+    { key: 'mirrorled',  name: 'Mirror LED',       deviceId: 'a57450',       type: 'light', room: 'Kitchen' },
+    { key: 'stairsled',  name: 'Stairs LED',       deviceId: 'a6afec',       type: 'light', room: 'Spa' },
+    { key: 'logoled',    name: 'Logo LED',         deviceId: 'a5b535',       type: 'light', room: 'Living room & bedroom' },
+    { key: 'saunaled',   name: 'Sauna LED',        deviceId: 'a56b06',       type: 'light', room: 'Spa' },
+    { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover', favPos: 51, room: 'Cinema' },
+    { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1, room: 'Entrance' },
   ],
   apt50: [
-    { key: 'bar',          name: 'Bar lights',           deviceId: '8caab54cf1e5', type: 'light' },
-    { key: 'living',       name: 'Living room lights',   deviceId: '483fda91a886', type: 'light' },
-    { key: 'kitchenrad',   name: 'Kitchen radiator light', deviceId: '8caab54c5210', type: 'light' },
-    { key: 'balcony',      name: 'Wall balcony lights',  deviceId: '8caab54cf1e3', type: 'light' },
-    { key: 'bedroom',      name: 'Bedroom lights',       deviceId: '3494547aa257', type: 'switch', channel: 0 },
-    { key: 'hottub',       name: 'Hot tub lights',       deviceId: '3494547aa257', type: 'switch', channel: 1 },
-    { key: 'fireplaceled', name: 'Fireplace LED',        deviceId: 'a696dc', type: 'rgb' },
-    { key: 'barled',       name: 'Bar LED',              deviceId: '6f4a9b', type: 'rgb' },
-    { key: 'kitchenled',   name: 'Kitchen LED',          deviceId: 'a5b16e', type: 'rgb' },
-    { key: 'bedroomled',   name: 'Bedroom LED',          deviceId: 'a57440', type: 'rgb' },
-    { key: 'stairsled',    name: 'Stairs LED',           deviceId: 'e868e7f38cf4', type: 'rgb' },
-    { key: 'saunaled',     name: 'Sauna LED',            deviceId: 'a56a3c', type: 'rgb' },
-    { key: 'wardrobeled',  name: 'Wardrobe LED',         deviceId: 'a69c16', type: 'rgb' },
-    { key: 'projector',    name: 'Projector screen',     deviceId: '34945477c20a', type: 'cover', favPos: 72 },
-    { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1 },
+    { key: 'bar',          name: 'Bar lights',           deviceId: '8caab54cf1e5', type: 'light', room: 'Kitchen' },
+    { key: 'living',       name: 'Living room lights',   deviceId: '483fda91a886', type: 'light', room: 'Living room' },
+    { key: 'kitchenrad',   name: 'Kitchen radiator light', deviceId: '8caab54c5210', type: 'light', room: 'Kitchen' },
+    { key: 'balcony',      name: 'Wall balcony lights',  deviceId: '8caab54cf1e3', type: 'light', room: 'Bedroom' },
+    { key: 'bedroom',      name: 'Bedroom lights',       deviceId: '3494547aa257', type: 'switch', channel: 0, room: 'Bedroom' },
+    { key: 'hottub',       name: 'Hot tub lights',       deviceId: '3494547aa257', type: 'switch', channel: 1, room: 'Spa' },
+    { key: 'fireplaceled', name: 'Fireplace LED',        deviceId: 'a696dc', type: 'rgb', room: 'Living room' },
+    { key: 'livingled',    name: 'Living room LED',       deviceId: 'a69425', type: 'rgb', room: 'Living room' },
+    { key: 'mirrorled',    name: 'Mirror LED',            deviceId: 'a695b3', type: 'rgb', room: 'Living room' },
+    { key: 'barled',       name: 'Bar LED',              deviceId: '6f4a9b', type: 'rgb', room: 'Kitchen' },
+    { key: 'kitchenled',   name: 'Kitchen LED',          deviceId: 'a5b16e', type: 'rgb', room: 'Kitchen' },
+    { key: 'bedroomled',   name: 'Bedroom LED',          deviceId: 'a57440', type: 'rgb', room: 'Bedroom' },
+    { key: 'stairsled',    name: 'Stairs LED',           deviceId: 'e868e7f38cf4', type: 'rgb', room: 'Spa' },
+    { key: 'saunaled',     name: 'Sauna LED',            deviceId: 'a56a3c', type: 'rgb', room: 'Spa' },
+    { key: 'wardrobeled',  name: 'Wardrobe LED',         deviceId: 'a69c16', type: 'rgb', room: 'Bedroom' },
+    { key: 'projector',    name: 'Projector screen',     deviceId: '34945477c20a', type: 'cover', favPos: 72, room: 'Cinema' },
+    { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1, room: 'Entrance' },
   ],
 };
 
@@ -306,7 +308,7 @@ app.get('/api/reservation/by-phone/:phone', async (req, res) => {
 app.get('/api/lights/:apt', (req, res) => {
   const apt = req.params.apt;
   if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
-  res.json((LIGHTS[apt] || []).map(l => ({ key: l.key, name: l.name, id: l.deviceId, type: l.type || 'switch', fav: l.favPos })));
+  res.json((LIGHTS[apt] || []).map(l => ({ key: l.key, name: l.name, id: l.deviceId, type: l.type || 'switch', fav: l.favPos, room: l.room || 'Other', channel: l.channel })));
 });
 
 // --- LIGHTS: flip one on/off (gated by CONTROL_TOKEN for now) ---
@@ -358,55 +360,58 @@ app.get('/api/status/:apt', async (req, res) => {
 });
 
 // --- LIGHTS: smart control (switch / light / rgb / cover), gated by CONTROL_TOKEN ---
-app.post('/api/control', async (req, res) => {
-  const { apt, id, kind, on, channel, color, cover, pulse, token } = req.body || {};
-  const need = process.env.CONTROL_TOKEN || '';
-  if (need && token !== need) return res.status(401).json({ error: 'unauthorized' });
-  if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
-  if (!id) return res.status(400).json({ error: 'missing device id' });
-  // shared devices (entrance) carry an account override in the registry
+async function controlDevice(apt, opts) {
+  const { id, kind, on, channel, color, cover, pulse } = opts || {};
+  if (!VALID_APTS.includes(apt)) { const e = new Error('unknown apartment'); e.status = 404; throw e; }
+  if (!id) { const e = new Error('missing device id'); e.status = 400; throw e; }
   const devRec = (LIGHTS[apt] || []).find(x => x.deviceId === id);
   const acct = (devRec && devRec.acct) || apt;
-  // a device may pin its channel (e.g. the entrance is on relay 1 of a 2-channel Shelly)
   const ch = (devRec && Number.isInteger(devRec.channel)) ? devRec.channel
            : (Number.isInteger(channel) ? channel : 0);
-  try {
-    let resp;
-    if (kind === 'cover') {
-      resp = await shellyV2(acct, '/v2/devices/api/set/cover', { id, channel: ch, position: cover }); // 'open' | 'close' | 'stop' | number
-    } else if (kind === 'rgb' || kind === 'rgbw') {
-      const body = { id, channel: ch, on: on !== false };
-      if (color) {
-        body.mode = 'color';
-        if (color.r != null) body.red = color.r;
-        if (color.g != null) body.green = color.g;
-        if (color.b != null) body.blue = color.b;
-        if (color.w != null) body.white = color.w;
-        if (color.gain != null) body.gain = color.gain;
-      }
-      resp = await shellyV2(acct, '/v2/devices/api/set/light', body);
-    } else if (kind === 'light') {
-      const body = { id, channel: ch, on: !!on };
-      if (color && color.brightness != null) body.brightness = color.brightness;
-      resp = await shellyV2(acct, '/v2/devices/api/set/light', body);
-    } else { // switch / relay (default)
-      const body = { id, channel: ch, on: !!on };
-      if (pulse) body.toggle_after = pulse; // momentary pulse (e.g. door buzzer)
-      resp = await shellyV2(acct, '/v2/devices/api/set/switch', body);
+  let resp;
+  if (kind === 'cover') {
+    resp = await shellyV2(acct, '/v2/devices/api/set/cover', { id, channel: ch, position: cover });
+  } else if (kind === 'rgb' || kind === 'rgbw') {
+    const body = { id, channel: ch, on: on !== false };
+    if (color) {
+      body.mode = 'color';
+      if (color.r != null) body.red = color.r;
+      if (color.g != null) body.green = color.g;
+      if (color.b != null) body.blue = color.b;
+      if (color.w != null) body.white = color.w;
+      if (color.gain != null) body.gain = color.gain;
     }
-    if (resp && resp.isok === false) return res.status(502).json({ error: 'Shelly refused: ' + JSON.stringify(resp.errors || resp) });
-    // Re-read the device so the panel reflects reality (respecting the 1 req/sec limit).
-    let state = null;
-    try {
-      await new Promise(r => setTimeout(r, 1100));
-      const fresh = await shellyV2(acct, '/v2/devices/api/get', { ids: [id], select: ['status'] });
-      const arr = Array.isArray(fresh) ? fresh : (fresh.data || fresh.devices || []);
-      if (arr[0]) state = parseDeviceState(arr[0]);
-    } catch (_) { /* best effort */ }
-    res.json({ ok: true, state });
+    resp = await shellyV2(acct, '/v2/devices/api/set/light', body);
+  } else if (kind === 'light') {
+    const body = { id, channel: ch, on: !!on };
+    if (color && color.brightness != null) body.brightness = color.brightness;
+    resp = await shellyV2(acct, '/v2/devices/api/set/light', body);
+  } else {
+    const body = { id, channel: ch, on: !!on };
+    if (pulse) body.toggle_after = pulse;
+    resp = await shellyV2(acct, '/v2/devices/api/set/switch', body);
+  }
+  if (resp && resp.isok === false) { const e = new Error('Shelly refused: ' + JSON.stringify(resp.errors || resp)); e.status = 502; throw e; }
+  let state = null;
+  try {
+    await new Promise(r => setTimeout(r, 1100));
+    const fresh = await shellyV2(acct, '/v2/devices/api/get', { ids: [id], select: ['status'] });
+    const arr = Array.isArray(fresh) ? fresh : (fresh.data || fresh.devices || []);
+    if (arr[0]) state = parseDeviceState(arr[0]);
+  } catch (_) { /* best effort */ }
+  return { ok: true, state };
+}
+
+app.post('/api/control', async (req, res) => {
+  const { token } = req.body || {};
+  const need = process.env.CONTROL_TOKEN || '';
+  if (need && token !== need) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const out = await controlDevice(req.body.apt, req.body);
+    res.json(out);
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: String(e.message || e) });
+    res.status(e.status || 500).json({ error: String(e.message || e) });
   }
 });
 
@@ -579,6 +584,113 @@ app.post('/api/ir', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
+});
+
+// ===== GUEST CONTROL (authorized by reservation token, time-gated) =====
+// A guest's link token becomes their control key — but only while the stay is live.
+async function liveReservation(token) {
+  if (!token) return null;
+  const { rows } = await pool.query('SELECT * FROM guest_links WHERE token = $1', [token]);
+  const r = rows[0];
+  if (!r || r.status === 'cancelled') return null;
+  const now = Date.now();
+  const reveal = r.reveal_at ? new Date(r.reveal_at).getTime() : null;
+  const unveal = r.unveal_at ? new Date(r.unveal_at).getTime() : null;
+  if (reveal && now < reveal) return null;          // before reveal
+  if (unveal && now > unveal) return null;          // after unveal
+  return r;                                          // live → controllable
+}
+
+// which devices count as colour LEDs (rgb), and movie-night picks per apt
+const isLed = l => l.type === 'rgb' || l.type === 'rgbw' || /led$/i.test(l.key);
+const MOVIE_LEDS = { apt49: ['logoled', 'mainled', 'stairsled'], apt50: ['fireplaceled', 'livingled', 'mirrorled'] };
+const TURQUOISE = { r: 64, g: 224, b: 208 };
+
+// run a scene for an apartment. Shelly's 1 req/sec limit means this takes a little while.
+async function runScene(apt, scene, opts = {}) {
+  const lights = (LIGHTS[apt] || []).filter(l => l.key !== 'entrance' && l.type !== 'cover');
+  const leds = lights.filter(isLed);
+  const whites = lights.filter(l => !isLed(l));
+  const gap = () => new Promise(r => setTimeout(r, 1100)); // respect rate limit
+  const setDev = async (l, body) => { try { await controlDevice(apt, Object.assign({ id: l.deviceId, channel: l.channel }, body)); } catch (e) { /* keep going */ } await gap(); };
+  const irFire = async (key, action) => {
+    const grp = IR[apt]; if (!grp) return;
+    const dev = grp.devices.find(d => d.key === key); if (!dev) return;
+    try { await irSend(grp.blaster, dev, action); } catch (e) { /* keep going */ }
+    await gap();
+  };
+
+  if (scene === 'all_off' || scene === 'all_on') {
+    const on = scene === 'all_on';
+    for (const l of lights) await setDev(l, { kind: isLed(l) ? 'rgb' : (l.type === 'light' ? 'light' : 'switch'), on });
+  } else if (scene === 'leds_off' || scene === 'leds_on') {
+    const on = scene === 'leds_on';
+    for (const l of leds) await setDev(l, { kind: 'rgb', on });
+  } else if (scene === 'leds_set') {
+    const color = { r: opts.r, g: opts.g, b: opts.b, gain: opts.gain != null ? opts.gain : 100 };
+    for (const l of leds) await setDev(l, { kind: 'rgb', on: true, color });
+  } else if (scene === 'movie') {
+    const picks = (MOVIE_LEDS[apt] || []);
+    const movieLeds = leds.filter(l => picks.includes(l.key));
+    // 1) all whites + non-movie LEDs off
+    for (const l of whites) await setDev(l, { kind: l.type === 'light' ? 'light' : 'switch', on: false });
+    for (const l of leds.filter(l => !picks.includes(l.key))) await setDev(l, { kind: 'rgb', on: false });
+    // 2) movie LEDs → turquoise @ 50%
+    for (const l of movieLeds) await setDev(l, { kind: 'rgb', on: true, color: { r: TURQUOISE.r, g: TURQUOISE.g, b: TURQUOISE.b, gain: 50 } });
+    // 3) projector on, surround on
+    await irFire('projector', 'on');
+    await irFire('surround', 'toggle');
+    // 4) projector screen down to favourite position
+    const screen = (LIGHTS[apt] || []).find(l => l.type === 'cover');
+    if (screen) { try { await controlDevice(apt, { id: screen.deviceId, kind: 'cover', cover: screen.favPos != null ? screen.favPos : 50 }); } catch (e) {} }
+  } else {
+    const e = new Error('unknown scene'); e.status = 400; throw e;
+  }
+  return { ok: true };
+}
+
+// GUEST: control one device (token = reservation token)
+app.post('/api/guest/control', async (req, res) => {
+  try {
+    const r = await liveReservation((req.body || {}).token);
+    if (!r) return res.status(403).json({ error: 'reservation not active' });
+    const out = await controlDevice(r.apt, req.body);
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
+});
+
+// GUEST: fire an IR device
+app.post('/api/guest/ir', async (req, res) => {
+  try {
+    const r = await liveReservation((req.body || {}).token);
+    if (!r) return res.status(403).json({ error: 'reservation not active' });
+    const grp = IR[r.apt]; if (!grp) return res.status(404).json({ error: 'no IR' });
+    const dev = grp.devices.find(d => d.key === (req.body || {}).key);
+    if (!dev) return res.status(404).json({ error: 'unknown device' });
+    const out = await irSend(grp.blaster, dev, (req.body || {}).action);
+    if (out && out.success === false) return res.status(502).json({ error: 'Tuya refused' });
+    res.json({ ok: true });
+  } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
+});
+
+// GUEST: run a scene
+app.post('/api/guest/scene', async (req, res) => {
+  try {
+    const r = await liveReservation((req.body || {}).token);
+    if (!r) return res.status(403).json({ error: 'reservation not active' });
+    const out = await runScene(r.apt, (req.body || {}).scene, req.body || {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
+});
+
+// MASTER: run a scene from the admin panel (CONTROL_TOKEN)
+app.post('/api/scene', async (req, res) => {
+  const need = process.env.CONTROL_TOKEN || '';
+  if (need && (req.body || {}).token !== need) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const out = await runScene((req.body || {}).apt, (req.body || {}).scene, req.body || {});
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
 });
 
 app.get('/', (_req, res) => res.send('PentLux content API is running.'));
