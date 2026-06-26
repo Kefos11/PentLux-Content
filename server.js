@@ -232,7 +232,7 @@ app.post('/api/reservations', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
 });
 
-// EDIT (admin) — any subset of fields; recomputes reveal/unveal only if explicitly sent
+// EDIT (admin) â€” any subset of fields; recomputes reveal/unveal only if explicitly sent
 app.put('/api/reservations/:id', async (req, res) => {
   if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
   const b = req.body || {};
@@ -267,7 +267,7 @@ app.get('/api/reservations', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
 });
 
-// GUEST PORTAL read (public, by link token) — time-gated, never leaks code early
+// GUEST PORTAL read (public, by link token) â€” time-gated, never leaks code early
 app.get('/api/reservation/:token', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM guest_links WHERE token = $1', [req.params.token]);
@@ -289,7 +289,7 @@ app.get('/api/reservation/:token', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
 });
 
-// LARA read (by phone) — returns context for the bot. Protected by ADMIN_TOKEN.
+// LARA read (by phone) â€” returns context for the bot. Protected by ADMIN_TOKEN.
 app.get('/api/reservation/by-phone/:phone', async (req, res) => {
   if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
   try {
@@ -561,6 +561,19 @@ app.get('/api/tuya/fire/:blaster/:remote/:key', async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
+// BROWSER TEST: fire an IR device through the full logic (DIY/projector/surround handled).
+// e.g. /api/irtest/apt49/fireplace/on  Â·  /api/irtest/apt50/projector/off
+app.get('/api/irtest/:apt/:key/:action', async (req, res) => {
+  const grp = IR[req.params.apt];
+  if (!grp) return res.status(404).json({ error: 'unknown apartment' });
+  const dev = grp.devices.find(d => d.key === req.params.key);
+  if (!dev) return res.status(404).json({ error: 'unknown device', available: grp.devices.map(d => d.key) });
+  try {
+    const out = await irSend(grp.blaster, dev, req.params.action);
+    res.json({ ok: !(out && out.success === false), tuya: out });
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
 // LIST the IR devices for an apartment (for the panel)
 app.get('/api/ir/:apt', (req, res) => {
   const grp = IR[req.params.apt];
@@ -587,7 +600,7 @@ app.post('/api/ir', async (req, res) => {
 });
 
 // ===== GUEST CONTROL (authorized by reservation token, time-gated) =====
-// A guest's link token becomes their control key — but only while the stay is live.
+// A guest's link token becomes their control key â€” but only while the stay is live.
 async function liveReservation(token) {
   if (!token) return null;
   const { rows } = await pool.query('SELECT * FROM guest_links WHERE token = $1', [token]);
@@ -598,7 +611,7 @@ async function liveReservation(token) {
   const unveal = r.unveal_at ? new Date(r.unveal_at).getTime() : null;
   if (reveal && now < reveal) return null;          // before reveal
   if (unveal && now > unveal) return null;          // after unveal
-  return r;                                          // live → controllable
+  return r;                                          // live â†’ controllable
 }
 
 // which devices count as colour LEDs (rgb), and movie-night picks per apt
@@ -635,7 +648,7 @@ async function runScene(apt, scene, opts = {}) {
     // 1) all whites + non-movie LEDs off
     for (const l of whites) await setDev(l, { kind: l.type === 'light' ? 'light' : 'switch', on: false });
     for (const l of leds.filter(l => !picks.includes(l.key))) await setDev(l, { kind: 'rgb', on: false });
-    // 2) movie LEDs → turquoise @ 50%
+    // 2) movie LEDs â†’ turquoise @ 50%
     for (const l of movieLeds) await setDev(l, { kind: 'rgb', on: true, color: { r: TURQUOISE.r, g: TURQUOISE.g, b: TURQUOISE.b, gain: 50 } });
     // 3) projector on, surround on
     await irFire('projector', 'on');
