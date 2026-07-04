@@ -148,8 +148,16 @@ async function shellyV2(apt, endpoint, bodyObj) {
 // device (e.g. an RGBW driving several LED strips) report every channel, and lets
 // the hub show an "offline" state when a device is unreachable.
 function parseDeviceState(dev) {
-  const online = dev && (dev.online === undefined ? true : !!dev.online);
   const st = (dev && dev.status) || {};
+  // Shelly's `online` flag is unreliable (cloud devices often report online:0 even
+  // when returning fresh, valid status). So: a device is considered online if it
+  // EITHER has online:1 OR returned real status data (it clearly just answered).
+  const hasStatus = st && Object.keys(st).length > 0 && (
+    st.lights || st.relays || st.rollers ||
+    Object.keys(st).some(k => k.startsWith('switch:') || k.startsWith('light:') || k.startsWith('rgb') || k.startsWith('cover:'))
+  );
+  const flag = dev && (dev.online === undefined ? true : !!dev.online);
+  const online = flag || !!hasStatus;
   const channels = [];
 
   for (const k of Object.keys(st)) {
