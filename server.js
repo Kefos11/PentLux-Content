@@ -341,6 +341,30 @@ app.post('/api/light', async (req, res) => {
 });
 
 // --- LIGHTS: live status for every device in an apartment (on/off, colour, type) ---
+// DEBUG: returns the RAW Shelly response for one apartment so we can map the exact shape.
+// Safe to leave in — returns device status only, same data as /api/status.
+app.get('/api/status-raw/:apt', async (req, res) => {
+  const apt = req.params.apt;
+  if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
+  const devs = LIGHTS[apt] || [];
+  const byAcct = {};
+  devs.forEach(d => { const a = d.acct || apt; (byAcct[a] = byAcct[a] || []).push(d.deviceId); });
+  try {
+    const dump = {};
+    for (const acct of Object.keys(byAcct)) {
+      const ids = byAcct[acct];
+      const { server, key } = shellyCreds(acct);
+      if (!server || !key) { dump[acct] = { error: 'account not configured' }; continue; }
+      const batch = ids.slice(0, 3); // just first few devices to keep it small
+      const resp = await shellyV2(acct, '/v2/devices/api/get', { ids: batch, select: ['status'] });
+      dump[acct] = { requestedIds: batch, responseType: Array.isArray(resp) ? 'array' : typeof resp, raw: resp };
+    }
+    res.json(dump);
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
 app.get('/api/status/:apt', async (req, res) => {
   const apt = req.params.apt;
   if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
@@ -356,14 +380,33 @@ app.get('/api/status/:apt', async (req, res) => {
       for (let i = 0; i < ids.length; i += 10) {
         const batch = ids.slice(i, i + 10);
         const resp = await shellyV2(acct, '/v2/devices/api/get', { ids: batch, select: ['status'] });
-        const arr = Array.isArray(resp) ? resp : (resp.data || resp.devices || []);
+        // Shelly may return an array OR an object keyed by device id. Normalize to an array of {id, status, online}.
+        let arr;
+        if (Array.isArray(resp)) {
+          arr = resp;
+        } else if (resp && Array.isArray(resp.data)) {
+          arr = resp.data;
+        } else if (resp && Array.isArray(resp.devices)) {
+          arr = resp.devices;
+        } else if (resp && typeof resp === 'object') {
+          // object keyed by device id -> [{id, ...fields}]
+          arr = Object.keys(resp).map(id => {
+            const v = resp[id] || {};
+            // some shapes nest under .status already; keep id attached
+            return Object.assign({ id }, v);
+          });
+        } else {
+          arr = [];
+        }
         const seen = new Set();
         arr.forEach(d => {
-          seen.add(d.id);
+          const devId = d.id || d.device_id || d._id;
+          if (!devId) return;
+          seen.add(devId);
           const chans = parseDeviceState(d);        // array, one per channel
           chans.forEach(cs => {
-            out[d.id] = out[d.id] || cs;             // back-compat: bare id = first channel
-            out[d.id + ':' + cs.channel] = cs;       // precise: id:channel
+            out[devId] = out[devId] || cs;             // back-compat: bare id = first channel
+            out[devId + ':' + cs.channel] = cs;        // precise: id:channel
           });
         });
         // any requested device that didn't come back = unreachable/offline
