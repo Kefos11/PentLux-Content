@@ -143,24 +143,33 @@ async function shellyV2(apt, endpoint, bodyObj) {
 }
 
 // Reads one device object (from v2 get) into a simple shape: what it is + on/off + colour.
+// Returns an ARRAY of per-channel states for a device, each with its channel id,
+// plus whether the device is online/reachable. This lets a single multi-channel
+// device (e.g. an RGBW driving several LED strips) report every channel, and lets
+// the hub show an "offline" state when a device is unreachable.
 function parseDeviceState(dev) {
+  const online = dev && (dev.online === undefined ? true : !!dev.online);
   const st = (dev && dev.status) || {};
+  const channels = [];
+
   for (const k of Object.keys(st)) {
     const c = st[k] || {};
-    if (k.startsWith('cover:'))  return { kind: 'cover',  channel: c.id || 0, state: c.state, pos: c.current_pos };
-    if (k.startsWith('switch:')) return { kind: 'switch', channel: c.id || 0, on: !!c.output };
-    if (k.startsWith('rgbw:'))   return { kind: 'rgbw',   channel: c.id || 0, on: !!c.output, rgb: c.rgb, white: c.white, gain: c.gain, brightness: c.brightness };
-    if (k.startsWith('rgb:'))    return { kind: 'rgb',    channel: c.id || 0, on: !!c.output, rgb: c.rgb, gain: c.gain, brightness: c.brightness };
-    if (k.startsWith('light:'))  return { kind: 'light',  channel: c.id || 0, on: !!c.output, brightness: c.brightness };
+    if (k.startsWith('cover:'))  channels.push({ kind: 'cover',  channel: c.id || 0, state: c.state, pos: c.current_pos, online });
+    else if (k.startsWith('switch:')) channels.push({ kind: 'switch', channel: c.id || 0, on: !!c.output, online });
+    else if (k.startsWith('rgbw:'))   channels.push({ kind: 'rgbw',   channel: c.id || 0, on: !!c.output, rgb: c.rgb, white: c.white, gain: c.gain, brightness: c.brightness, online });
+    else if (k.startsWith('rgb:'))    channels.push({ kind: 'rgb',    channel: c.id || 0, on: !!c.output, rgb: c.rgb, gain: c.gain, brightness: c.brightness, online });
+    else if (k.startsWith('light:'))  channels.push({ kind: 'light',  channel: c.id || 0, on: !!c.output, brightness: c.brightness, online });
   }
-  // Gen1 shapes
-  if (Array.isArray(st.relays) && st.relays.length) return { kind: 'switch', channel: 0, on: !!st.relays[0].ison };
-  if (Array.isArray(st.lights) && st.lights.length) {
-    const l = st.lights[0];
-    return { kind: (l.red !== undefined ? 'rgb' : 'light'), channel: 0, on: !!l.ison, rgb: [l.red, l.green, l.blue], gain: l.gain, brightness: l.brightness };
+
+  // Gen1 shapes (arrays of relays / lights / rollers, indexed by channel)
+  if (!channels.length) {
+    if (Array.isArray(st.relays))  st.relays.forEach((r, i)  => channels.push({ kind: 'switch', channel: i, on: !!r.ison, online }));
+    if (Array.isArray(st.lights))  st.lights.forEach((l, i)  => channels.push({ kind: (l.red !== undefined ? 'rgb' : 'light'), channel: i, on: !!l.ison, rgb: [l.red, l.green, l.blue], gain: l.gain, brightness: l.brightness, online }));
+    if (Array.isArray(st.rollers)) st.rollers.forEach((ro, i) => channels.push({ kind: 'cover', channel: i, state: ro.state, pos: ro.current_pos, online }));
   }
-  if (Array.isArray(st.rollers) && st.rollers.length) return { kind: 'cover', channel: 0, state: st.rollers[0].state };
-  return { kind: 'unknown', online: dev && dev.online };
+
+  if (!channels.length) channels.push({ kind: 'unknown', channel: 0, online });
+  return channels;
 }
 
 // --- READ (public) ---
@@ -348,7 +357,17 @@ app.get('/api/status/:apt', async (req, res) => {
         const batch = ids.slice(i, i + 10);
         const resp = await shellyV2(acct, '/v2/devices/api/get', { ids: batch, select: ['status'] });
         const arr = Array.isArray(resp) ? resp : (resp.data || resp.devices || []);
-        arr.forEach(d => { out[d.id] = parseDeviceState(d); });
+        const seen = new Set();
+        arr.forEach(d => {
+          seen.add(d.id);
+          const chans = parseDeviceState(d);        // array, one per channel
+          chans.forEach(cs => {
+            out[d.id] = out[d.id] || cs;             // back-compat: bare id = first channel
+            out[d.id + ':' + cs.channel] = cs;       // precise: id:channel
+          });
+        });
+        // any requested device that didn't come back = unreachable/offline
+        batch.forEach(id => { if (!seen.has(id)) out[id] = { kind: 'unknown', channel: 0, online: false }; });
         await new Promise(r => setTimeout(r, 1100)); // respect 1 req/sec per account
       }
     }
