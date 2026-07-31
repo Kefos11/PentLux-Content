@@ -262,6 +262,11 @@ app.put('/api/reservations/:id', async (req, res) => {
   if (b.checkout != null) set('checkout', b.checkout || null);
   if (b.reveal_at != null) set('reveal_at', b.reveal_at || null);
   if (b.unveal_at != null) set('unveal_at', b.unveal_at || null);
+  // If check-in/out changed but reveal/unveal weren't explicitly provided, recompute them
+  // from the new dates — otherwise the hub keeps reading the OLD gate times (e.g. a past
+  // unveal makes an edited-to-future reservation still show the "ended / thank you" state).
+  if (b.checkin != null && b.reveal_at == null)  set('reveal_at', b.checkin  ? defReveal(b.checkin)   : null);
+  if (b.checkout != null && b.unveal_at == null) set('unveal_at', b.checkout ? defUnveal(b.checkout) : null);
   if (b.door_code != null) set('door_code', b.door_code);
   if (b.notes != null) set('notes', b.notes);
   if (b.status != null) set('status', b.status === 'cancelled' ? 'cancelled' : 'active');
