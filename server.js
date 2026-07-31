@@ -781,6 +781,54 @@ app.post('/api/scene', async (req, res) => {
   } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
 });
 
+// ── TRANSLATION (free Google endpoint, in-memory cached) ──────────────
+// The hub sends an array of English strings + a target language; we translate
+// and cache so only the first guest per language waits. No API key needed.
+const _trCache = {}; // { lang: { sourceText: translated } }
+
+async function gTranslate(text, to) {
+  // Google's free web endpoint — no key. Returns translated text for one string.
+  const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=' +
+    encodeURIComponent(to) + '&dt=t&q=' + encodeURIComponent(text);
+  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (!r.ok) throw new Error('translate http ' + r.status);
+  const data = await r.json();
+  // data[0] is an array of [translatedChunk, originalChunk, ...]; join the chunks.
+  return (data[0] || []).map(seg => seg[0]).join('');
+}
+
+app.post('/api/translate', async (req, res) => {
+  try {
+    const { lang, texts } = req.body || {};
+    if (!lang || !Array.isArray(texts)) return res.status(400).json({ error: 'lang and texts[] required' });
+    if (lang === 'en') return res.json({ lang, translations: texts }); // no-op
+    _trCache[lang] = _trCache[lang] || {};
+    const cache = _trCache[lang];
+    const out = new Array(texts.length);
+    const todo = [];
+    texts.forEach((t, idx) => {
+      const key = (t || '').trim();
+      if (!key) { out[idx] = t; }
+      else if (cache[key] != null) { out[idx] = cache[key]; }
+      else { todo.push({ idx, key }); }
+    });
+    // Translate the uncached ones (sequential to be gentle on the free endpoint)
+    for (const item of todo) {
+      try {
+        const tr = await gTranslate(item.key, lang);
+        cache[item.key] = tr;
+        out[item.idx] = tr;
+      } catch (e) {
+        out[item.idx] = texts[item.idx]; // fall back to English on any failure
+      }
+    }
+    res.json({ lang, translations: out });
+  } catch (e) {
+    console.error('[translate]', e.message);
+    res.status(500).json({ error: 'translate error' });
+  }
+});
+
 app.get('/', (_req, res) => res.send('PentLux content API is running.'));
 
 const port = process.env.PORT || 3000;
