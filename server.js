@@ -67,6 +67,7 @@ const LIGHTS = {
   apt50: [
     { key: 'bar',          name: 'Bar lights',           deviceId: '8caab54cf1e5', type: 'light', room: 'Kitchen' },
     { key: 'living',       name: 'Living room lights',   deviceId: '483fda91a886', type: 'light', room: 'Living room' },
+    { key: 'fireplacelight', name: 'Fireplace light',     deviceId: '483fda91a232', type: 'light', room: 'Living room' },
     { key: 'kitchenrad',   name: 'Kitchen radiator light', deviceId: '8caab54c5210', type: 'light', room: 'Kitchen' },
     { key: 'balcony',      name: 'Wall balcony lights',  deviceId: '8caab54cf1e3', type: 'light', room: 'Bedroom' },
     { key: 'bedroom',      name: 'Bedroom lights',       deviceId: '3494547aa257', type: 'switch', channel: 0, room: 'Bedroom' },
@@ -241,10 +242,10 @@ app.post('/api/reservations', async (req, res) => {
   const unveal = b.unveal_at || defUnveal(b.checkout);
   try {
     const { rows } = await pool.query(
-      `INSERT INTO guest_links (token, guest_name, guest_phone, apt, checkin, checkout, reveal_at, unveal_at, door_code, notes, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active') RETURNING *`,
+      `INSERT INTO guest_links (token, guest_name, guest_phone, apt, checkin, checkout, reveal_at, unveal_at, door_code, notes, welcome_color, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'active') RETURNING *`,
       [token, b.guest_name || '', onlyDigits(b.guest_phone), apt, b.checkin || null, b.checkout || null,
-       reveal, unveal, b.door_code || '', b.notes || '']);
+       reveal, unveal, b.door_code || '', b.notes || '', b.welcome_color || null]);
     res.json({ ok: true, reservation: rows[0] });
   } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
 });
@@ -268,6 +269,7 @@ app.put('/api/reservations/:id', async (req, res) => {
   if (b.checkin != null && b.reveal_at == null)  set('reveal_at', b.checkin  ? defReveal(b.checkin)   : null);
   if (b.checkout != null && b.unveal_at == null) set('unveal_at', b.checkout ? defUnveal(b.checkout) : null);
   if (b.door_code != null) set('door_code', b.door_code);
+  if (b.welcome_color != null) set('welcome_color', b.welcome_color || null);
   if (b.notes != null) set('notes', b.notes);
   if (b.status != null) set('status', b.status === 'cancelled' ? 'cancelled' : 'active');
   if (!fields.length) return res.json({ ok: true, unchanged: true });
@@ -307,6 +309,7 @@ app.get('/api/reservation/:token', async (req, res) => {
       status: r.status, cancelled, revealed, expired,
       door_code: revealed ? r.door_code : null,
       controls: revealed,
+      welcome_color: r.welcome_color || null,
     });
   } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
 });
@@ -731,6 +734,12 @@ async function runScene(apt, scene, opts = {}) {
     // 4) projector screen down to favourite position
     const screen = (LIGHTS[apt] || []).find(l => l.type === 'cover');
     if (screen) { try { await controlDevice(apt, { id: screen.deviceId, kind: 'cover', cover: screen.favPos != null ? screen.favPos : 50 }); } catch (e) {} }
+  } else if (scene === 'welcome') {
+    // Arrival state: all white lights OFF, all LEDs ON at 100% in the welcome colour.
+    // Gives a known starting colour (default turquoise, or the reservation's chosen colour).
+    const col = { r: opts.r != null ? opts.r : TURQUOISE.r, g: opts.g != null ? opts.g : TURQUOISE.g, b: opts.b != null ? opts.b : TURQUOISE.b, gain: 100 };
+    for (const l of whites) await setDev(l, { kind: l.type === 'light' ? 'light' : 'switch', on: false });
+    for (const l of leds) await setDev(l, { kind: 'rgb', on: true, color: col });
   } else {
     const e = new Error('unknown scene'); e.status = 400; throw e;
   }
@@ -832,4 +841,11 @@ app.post('/api/translate', async (req, res) => {
 app.get('/', (_req, res) => res.send('PentLux content API is running.'));
 
 const port = process.env.PORT || 3000;
+// Ensure newer columns exist (safe to run every boot — only adds if missing).
+(async () => {
+  try {
+    await pool.query('ALTER TABLE guest_links ADD COLUMN IF NOT EXISTS welcome_color TEXT');
+    await pool.query('ALTER TABLE guest_links ADD COLUMN IF NOT EXISTS welcome_done BOOLEAN DEFAULT false');
+  } catch (e) { console.error('[schema]', e.message); }
+})();
 app.listen(port, () => console.log('PentLux content API listening on ' + port));
