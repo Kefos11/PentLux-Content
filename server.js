@@ -465,7 +465,10 @@ async function controlDevice(apt, opts) {
     if (color && color.brightness != null) body.brightness = color.brightness;
     resp = await shellyV2(acct, '/v2/devices/api/set/light', body);
   } else {
-    const body = { id, channel: ch, on: !!on };
+    // Plain relay switch. The building entrance sends { on:true } and the relay
+    // is configured to auto-close itself, so no toggle timing is needed here.
+    // (pulse/toggle_after is kept for any relay that needs a timed auto-off.)
+    const body = { id, channel: ch, on: pulse ? true : !!on };
     if (pulse) body.toggle_after = pulse;
     resp = await shellyV2(acct, '/v2/devices/api/set/switch', body);
   }
