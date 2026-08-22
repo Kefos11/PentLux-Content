@@ -465,12 +465,18 @@ async function controlDevice(apt, opts) {
     if (color && color.brightness != null) body.brightness = color.brightness;
     resp = await shellyV2(acct, '/v2/devices/api/set/light', body);
   } else {
-    // Plain relay switch. The building entrance sends { on:true } and the relay
-    // is configured to auto-close itself, so no toggle timing is needed here.
-    // (pulse/toggle_after is kept for any relay that needs a timed auto-off.)
-    const body = { id, channel: ch, on: pulse ? true : !!on };
-    if (pulse) body.toggle_after = pulse;
-    resp = await shellyV2(acct, '/v2/devices/api/set/switch', body);
+    // Plain relay. The building entrance is a Gen1 Shelly (SHSW-25), which the Gen2
+    // /set/switch endpoint doesn't reliably drive — so relays go through the Gen1
+    // cloud control path (turn=on). The relay is configured to auto-close itself.
+    const { server, key } = shellyCreds(acct);
+    if (!server || !key) { const e = new Error('Shelly not configured for ' + acct); e.status = 500; throw e; }
+    const base = server.startsWith('http') ? server : 'https://' + server;
+    const params = new URLSearchParams({ id, channel: String(ch), turn: (on === false ? 'off' : 'on'), auth_key: key });
+    const rr = await fetch(base.replace(/\/+$/, '') + '/device/relay/control', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params,
+    });
+    const t = await rr.text();
+    try { resp = JSON.parse(t); } catch { resp = { _raw: t.slice(0, 300), _http: rr.status }; }
   }
   if (resp && resp.isok === false) { const e = new Error('Shelly refused: ' + JSON.stringify(resp.errors || resp)); e.status = 502; throw e; }
   let state = null;
@@ -838,6 +844,29 @@ app.post('/api/translate', async (req, res) => {
   } catch (e) {
     console.error('[translate]', e.message);
     res.status(500).json({ error: 'translate error' });
+  }
+});
+
+// DEBUG: fire the entrance relay directly and return the raw Shelly response,
+// so we can see exactly what the door controller says. Visit in a browser:
+//   /api/entrance-test/apt50
+app.get('/api/entrance-test/:apt', async (req, res) => {
+  try {
+    const apt = req.params.apt;
+    const dev = (LIGHTS[apt] || []).find(d => d.key === 'entrance');
+    if (!dev) return res.json({ error: 'no entrance device configured for ' + apt });
+    const { server, key } = shellyCreds(dev.acct || apt);
+    if (!server || !key) return res.json({ error: 'entrance Shelly not configured (missing SHELLY_SERVER_ENTRANCE / SHELLY_AUTH_KEY_ENTRANCE?)', haveServer: !!server, haveKey: !!key });
+    const base = server.startsWith('http') ? server : 'https://' + server;
+    const params = new URLSearchParams({ id: dev.deviceId, channel: String(dev.channel ?? 0), turn: 'on', auth_key: key });
+    const rr = await fetch(base.replace(/\/+$/, '') + '/device/relay/control', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params,
+    });
+    const txt = await rr.text();
+    let parsed; try { parsed = JSON.parse(txt); } catch { parsed = txt.slice(0, 500); }
+    res.json({ sent: { deviceId: dev.deviceId, channel: dev.channel, turn: 'on' }, httpStatus: rr.status, shellyResponse: parsed });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
   }
 });
 
