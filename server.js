@@ -612,21 +612,35 @@ const LOCKS = {
 // family of commands. The reliable path: request a remote-unlock "ticket", then
 // send the open command with it. We try the simple switch first, then the ticket flow.
 async function tuyaUnlock(deviceId) {
-  // 1) Try the simple boolean command some locks accept (open = true)
-  let out = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/commands`,
-    { commands: [{ code: 'unlock_request', value: true }] }, 'lock');
-  if (out && out.success) return { ok: true, method: 'unlock_request', raw: out };
-
-  // 2) Ticket-based remote unlock (most WBRL locks): get a ticket, then open with it.
-  const ticket = await tuyaRequest('POST', `/v1.0/smart-lock/devices/${deviceId}/password-ticket`, {}, 'lock');
+  // Ticket-based remote unlock (videolock / WBRL, supports remote_no_dp_key):
+  // get a password-ticket, then open the door with that ticket. We try the known
+  // open-door variants in order and return on the first that succeeds.
+  const ticket = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/password-ticket`, {}, 'lock');
   const ticketId = ticket && ticket.result && ticket.result.ticket_id;
-  if (ticketId) {
-    const open = await tuyaRequest('POST', `/v1.0/smart-lock/devices/${deviceId}/password-free/open-door`,
-      { ticket_id: ticketId }, 'lock');
-    if (open && open.success) return { ok: true, method: 'ticket', raw: open };
-    return { ok: false, method: 'ticket', raw: open, ticket };
+  if (!ticketId) return { ok: false, method: 'no-ticket', ticket };
+
+  const ok = o => o && o.success && (o.result === true || (o.result && o.result.result !== false) || o.result == null ? o.success : false);
+
+  // 1) v1.1 password-free open-door (current recommended)
+  let open = await tuyaRequest('POST', `/v1.1/devices/${deviceId}/door-lock/password-free/open-door`,
+    { ticket_id: ticketId }, 'lock');
+  if (open && open.success) return { ok: true, method: 'v1.1-open-door', raw: open };
+
+  // 2) v1.0 password-free open-door
+  open = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/password-free/open-door`,
+    { ticket_id: ticketId }, 'lock');
+  if (open && open.success) return { ok: true, method: 'v1.0-open-door', raw: open };
+
+  // 3) smart-lock door-operate (open:true) — needs its own ticket from the smart-lock path
+  const t2 = await tuyaRequest('POST', `/v1.0/smart-lock/devices/${deviceId}/password-ticket`, {}, 'lock');
+  const t2id = t2 && t2.result && t2.result.ticket_id;
+  if (t2id) {
+    open = await tuyaRequest('POST', `/v1.0/smart-lock/devices/${deviceId}/password-free/door-operate`,
+      { ticket_id: t2id, open: true }, 'lock');
+    if (open && open.success) return { ok: true, method: 'door-operate', raw: open };
   }
-  return { ok: false, method: 'none', raw: out, ticket };
+
+  return { ok: false, method: 'all-failed', raw: open, ticket };
 }
 
 // DIAGNOSTIC (open in a browser): list the remotes under an IR blaster
