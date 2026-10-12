@@ -565,30 +565,68 @@ async function irSend(blaster, dev, action) {
 const _sha256 = s => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const _hmac = (s, secret) => crypto.createHmac('sha256', secret).update(s, 'utf8').digest('hex').toUpperCase();
 
-async function tuyaRequest(method, path, body) {
-  const id = process.env.TUYA_ACCESS_ID, secret = process.env.TUYA_SECRET;
-  if (!id || !secret) throw new Error('Tuya not configured (TUYA_ACCESS_ID / TUYA_SECRET)');
+// Two Tuya accounts: the default "ir" account (SmartLife, IR devices) and the
+// "lock" account (Tuya app, Central Europe, door locks). Each has its own creds,
+// host, and cached token.
+const TUYA_ACCTS = {
+  ir:   { id: () => process.env.TUYA_ACCESS_ID,      secret: () => process.env.TUYA_SECRET,      host: TUYA_HOSTS[process.env.TUYA_REGION || 'us'] || TUYA_HOSTS.us, tok: { token: null, exp: 0 } },
+  lock: { id: () => process.env.TUYA_LOCK_ACCESS_ID, secret: () => process.env.TUYA_LOCK_SECRET, host: TUYA_HOSTS[process.env.TUYA_LOCK_REGION || 'eu'] || TUYA_HOSTS.eu, tok: { token: null, exp: 0 } },
+};
+
+async function tuyaRequest(method, path, body, acct = 'ir') {
+  const A = TUYA_ACCTS[acct] || TUYA_ACCTS.ir;
+  const id = A.id(), secret = A.secret();
+  if (!id || !secret) throw new Error('Tuya not configured for account "' + acct + '"');
   const isToken = path.startsWith('/v1.0/token');
-  const access = isToken ? '' : await tuyaToken();
+  const access = isToken ? '' : await tuyaToken(acct);
   const t = Date.now().toString();
   const bodyStr = body ? JSON.stringify(body) : '';
   const stringToSign = `${method}\n${_sha256(bodyStr)}\n\n${path}`;
   const sign = _hmac(id + access + t + stringToSign, secret);
   const headers = { client_id: id, sign, t, sign_method: 'HMAC-SHA256', 'Content-Type': 'application/json' };
   if (!isToken) headers.access_token = access;
-  const r = await fetch(TUYA_HOST + path, { method, headers, body: bodyStr || undefined });
+  const r = await fetch(A.host + path, { method, headers, body: bodyStr || undefined });
   return r.json();
 }
 
-async function tuyaToken() {
-  if (_tuyaTok.token && Date.now() < _tuyaTok.exp) return _tuyaTok.token;
-  const res = await tuyaRequest('GET', '/v1.0/token?grant_type=1', null);
+async function tuyaToken(acct = 'ir') {
+  const A = TUYA_ACCTS[acct] || TUYA_ACCTS.ir;
+  if (A.tok.token && Date.now() < A.tok.exp) return A.tok.token;
+  const res = await tuyaRequest('GET', '/v1.0/token?grant_type=1', null, acct);
   if (res && res.success && res.result) {
-    _tuyaTok.token = res.result.access_token;
-    _tuyaTok.exp = Date.now() + (res.result.expire_time - 60) * 1000;
-    return _tuyaTok.token;
+    A.tok.token = res.result.access_token;
+    A.tok.exp = Date.now() + (res.result.expire_time - 60) * 1000;
+    return A.tok.token;
   }
-  throw new Error('Tuya token failed: ' + JSON.stringify(res));
+  throw new Error('Tuya token failed (' + acct + '): ' + JSON.stringify(res));
+}
+
+// ===== TUYA DOOR LOCKS =====
+// Lock devices per apartment (Tuya app account, Central Europe).
+const LOCKS = {
+  apt49: 'bf8cb61dc88a4826a4gxvu',
+  apt50: 'bf63532bf824eb293657zh',
+};
+
+// Unlock a Tuya lock. These "WBRL" locks use the temporary-password/remote-unlock
+// family of commands. The reliable path: request a remote-unlock "ticket", then
+// send the open command with it. We try the simple switch first, then the ticket flow.
+async function tuyaUnlock(deviceId) {
+  // 1) Try the simple boolean command some locks accept (open = true)
+  let out = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/commands`,
+    { commands: [{ code: 'unlock_request', value: true }] }, 'lock');
+  if (out && out.success) return { ok: true, method: 'unlock_request', raw: out };
+
+  // 2) Ticket-based remote unlock (most WBRL locks): get a ticket, then open with it.
+  const ticket = await tuyaRequest('POST', `/v1.0/smart-lock/devices/${deviceId}/password-ticket`, {}, 'lock');
+  const ticketId = ticket && ticket.result && ticket.result.ticket_id;
+  if (ticketId) {
+    const open = await tuyaRequest('POST', `/v1.0/smart-lock/devices/${deviceId}/password-free/open-door`,
+      { ticket_id: ticketId }, 'lock');
+    if (open && open.success) return { ok: true, method: 'ticket', raw: open };
+    return { ok: false, method: 'ticket', raw: open, ticket };
+  }
+  return { ok: false, method: 'none', raw: out, ticket };
 }
 
 // DIAGNOSTIC (open in a browser): list the remotes under an IR blaster
@@ -865,6 +903,48 @@ app.get('/api/entrance-test/:apt', async (req, res) => {
     const txt = await rr.text();
     let parsed; try { parsed = JSON.parse(txt); } catch { parsed = txt.slice(0, 500); }
     res.json({ sent: { deviceId: dev.deviceId, channel: dev.channel, turn: 'on' }, httpStatus: rr.status, shellyResponse: parsed });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// GUEST: unlock the apartment door. Gated to an active reservation (within stay dates).
+// The hub also checks the guest is on the apartment WiFi before calling this.
+app.post('/api/guest/unlock', async (req, res) => {
+  try {
+    const { token } = req.body || {};
+    if (!token) return res.status(400).json({ error: 'token required' });
+    const { rows } = await pool.query('SELECT * FROM guest_links WHERE token = $1', [token]);
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: 'reservation not found' });
+    if (r.status === 'cancelled') return res.status(403).json({ error: 'reservation cancelled' });
+    // must be within the stay window (same gate as the door code reveal)
+    const now = Date.now();
+    const reveal = r.reveal_at ? new Date(r.reveal_at).getTime() : null;
+    const unveal = r.unveal_at ? new Date(r.unveal_at).getTime() : null;
+    if (reveal && now < reveal) return res.status(403).json({ error: 'stay not started yet' });
+    if (unveal && now > unveal) return res.status(403).json({ error: 'stay has ended' });
+    const lockId = LOCKS[r.apt];
+    if (!lockId) return res.status(404).json({ error: 'no lock for this apartment' });
+    const out = await tuyaUnlock(lockId);
+    if (out.ok) return res.json({ ok: true });
+    return res.status(502).json({ error: 'lock did not open', detail: out });
+  } catch (e) {
+    console.error('[unlock]', e.message);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// DEBUG: unlock a door directly and show the raw Tuya response. Visit in a browser:
+//   /api/lock-test/apt50
+app.get('/api/lock-test/:apt', async (req, res) => {
+  try {
+    const lockId = LOCKS[req.params.apt];
+    if (!lockId) return res.json({ error: 'no lock for ' + req.params.apt });
+    // also fetch the lock's spec so we can see what commands it actually supports
+    const spec = await tuyaRequest('GET', `/v1.0/devices/${lockId}/functions`, null, 'lock');
+    const out = await tuyaUnlock(lockId);
+    res.json({ lockId, unlockResult: out, supportedFunctions: spec });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
