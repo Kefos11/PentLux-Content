@@ -613,15 +613,13 @@ const LOCKS = {
 // send the open command with it. We try the simple switch first, then the ticket flow.
 async function tuyaUnlock(deviceId) {
   // Ticket-based remote unlock (videolock / WBRL, supports remote_no_dp_key):
-  // get a password-ticket, then open the door with that ticket. We try the known
-  // open-door variants in order and return on the first that succeeds.
+  // get a password-ticket, then open the door with that ticket. Confirmed working
+  // via the v1.1 password-free open-door endpoint; others kept as fallbacks.
   const ticket = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/password-ticket`, {}, 'lock');
   const ticketId = ticket && ticket.result && ticket.result.ticket_id;
   if (!ticketId) return { ok: false, method: 'no-ticket', ticket };
 
-  const ok = o => o && o.success && (o.result === true || (o.result && o.result.result !== false) || o.result == null ? o.success : false);
-
-  // 1) v1.1 password-free open-door (current recommended)
+  // 1) v1.1 password-free open-door (confirmed working on these locks)
   let open = await tuyaRequest('POST', `/v1.1/devices/${deviceId}/door-lock/password-free/open-door`,
     { ticket_id: ticketId }, 'lock');
   if (open && open.success) return { ok: true, method: 'v1.1-open-door', raw: open };
@@ -631,7 +629,7 @@ async function tuyaUnlock(deviceId) {
     { ticket_id: ticketId }, 'lock');
   if (open && open.success) return { ok: true, method: 'v1.0-open-door', raw: open };
 
-  // 3) smart-lock door-operate (open:true) — needs its own ticket from the smart-lock path
+  // 3) smart-lock door-operate (open:true) with its own ticket
   const t2 = await tuyaRequest('POST', `/v1.0/smart-lock/devices/${deviceId}/password-ticket`, {}, 'lock');
   const t2id = t2 && t2.result && t2.result.ticket_id;
   if (t2id) {
@@ -639,9 +637,30 @@ async function tuyaUnlock(deviceId) {
       { ticket_id: t2id, open: true }, 'lock');
     if (open && open.success) return { ok: true, method: 'door-operate', raw: open };
   }
-
   return { ok: false, method: 'all-failed', raw: open, ticket };
 }
+
+// Read a lock's CURRENT public IP from Tuya (self-updating, so a dynamic ISP IP
+// is always fresh). Tuya's device-detail returns an `ip` field = the device's
+// public IP, which is the apartment's public IP. Cached ~2 min to avoid spamming.
+const _lockIpCache = {}; // { deviceId: { ip, exp } }
+async function lockPublicIp(deviceId) {
+  const c = _lockIpCache[deviceId];
+  if (c && Date.now() < c.exp) return c.ip;
+  const res = await tuyaRequest('GET', `/v1.0/devices/${deviceId}`, null, 'lock');
+  const ip = res && res.result && res.result.ip ? String(res.result.ip).trim() : null;
+  _lockIpCache[deviceId] = { ip, exp: Date.now() + 120000 };
+  return ip;
+}
+
+// Get the caller's real public IP from the proxy headers (Railway sits behind a proxy).
+function clientIp(req) {
+  const xf = (req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return xf || req.socket.remoteAddress || '';
+}
+
+// Normalise an IP for comparison (strip IPv6 ::ffff: prefix, whitespace).
+function normIp(ip) { return String(ip || '').replace(/^::ffff:/, '').trim(); }
 
 // DIAGNOSTIC (open in a browser): list the remotes under an IR blaster
 app.get('/api/tuya/remotes/:blaster', async (req, res) => {
@@ -940,6 +959,24 @@ app.post('/api/guest/unlock', async (req, res) => {
     if (unveal && now > unveal) return res.status(403).json({ error: 'stay has ended' });
     const lockId = LOCKS[r.apt];
     if (!lockId) return res.status(404).json({ error: 'no lock for this apartment' });
+
+    // SAFETY GATE: the guest must be on the apartment's internet connection.
+    // We read the lock's current public IP from Tuya (self-updating for the dynamic
+    // ISP IP) and compare it to the guest's public IP. Exact match passes; as a
+    // safety net we also accept the same ISP /16 (first two octets), since the lock's
+    // reported IP can lag a few minutes behind a very recent ISP change.
+    const guestIp = normIp(clientIp(req));
+    let aptIp = null;
+    try { aptIp = normIp(await lockPublicIp(lockId)); } catch (e) { /* fall through */ }
+    if (!aptIp) {
+      return res.status(503).json({ error: 'wifi-check-unavailable' }); // can't verify right now
+    }
+    const same16 = (a, b) => a && b && a.split('.').slice(0, 2).join('.') === b.split('.').slice(0, 2).join('.');
+    const onAptNet = guestIp === aptIp || same16(guestIp, aptIp);
+    if (!onAptNet) {
+      return res.status(403).json({ error: 'not-on-apartment-wifi' });
+    }
+
     const out = await tuyaUnlock(lockId);
     if (out.ok) return res.json({ ok: true });
     return res.status(502).json({ error: 'lock did not open', detail: out });
@@ -959,6 +996,27 @@ app.get('/api/lock-test/:apt', async (req, res) => {
     const spec = await tuyaRequest('GET', `/v1.0/devices/${lockId}/functions`, null, 'lock');
     const out = await tuyaUnlock(lockId);
     res.json({ lockId, unlockResult: out, supportedFunctions: spec });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// DEBUG: open on your phone to see your public IP vs the apartment's lock IP,
+// and whether the gate would pass. e.g. /api/ip-check/apt50
+app.get('/api/ip-check/:apt', async (req, res) => {
+  try {
+    const lockId = LOCKS[req.params.apt];
+    if (!lockId) return res.json({ error: 'no lock for ' + req.params.apt });
+    const guestIp = normIp(clientIp(req));
+    let aptIp = null;
+    try { aptIp = normIp(await lockPublicIp(lockId)); } catch (e) { aptIp = 'ERROR: ' + e.message; }
+    const same16 = (a, b) => a && b && a.split('.').slice(0, 2).join('.') === b.split('.').slice(0, 2).join('.');
+    res.json({
+      guestIp, apartmentIp: aptIp,
+      exactMatch: guestIp === aptIp,
+      sameIspRange: same16(guestIp, aptIp),
+      wouldUnlock: guestIp === aptIp || same16(guestIp, aptIp),
+    });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
