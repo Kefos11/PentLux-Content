@@ -644,9 +644,9 @@ async function tuyaUnlock(deviceId) {
 // is always fresh). Tuya's device-detail returns an `ip` field = the device's
 // public IP, which is the apartment's public IP. Cached ~2 min to avoid spamming.
 const _lockIpCache = {}; // { deviceId: { ip, exp } }
-async function lockPublicIp(deviceId) {
+async function lockPublicIp(deviceId, fresh = false) {
   const c = _lockIpCache[deviceId];
-  if (c && Date.now() < c.exp) return c.ip;
+  if (!fresh && c && Date.now() < c.exp) return c.ip;   // fresh=true always re-reads
   const res = await tuyaRequest('GET', `/v1.0/devices/${deviceId}`, null, 'lock');
   const ip = res && res.result && res.result.ip ? String(res.result.ip).trim() : null;
   _lockIpCache[deviceId] = { ip, exp: Date.now() + 120000 };
@@ -661,6 +661,25 @@ function clientIp(req) {
 
 // Normalise an IP for comparison (strip IPv6 ::ffff: prefix, whitespace).
 function normIp(ip) { return String(ip || '').replace(/^::ffff:/, '').trim(); }
+
+// Is the guest on the apartment's internet? Their ISP uses CGNAT, so a guest on the
+// apartment WiFi and the lock can show DIFFERENT public IPs that still sit in the same
+// ISP block (seen: 77.28.x and 77.29.x on WiFi; 46.x on mobile). So we match a /15
+// around the lock's current IP (same 1st octet, 2nd octet paired as 28/29, 30/31, …):
+// this groups 77.28+77.29 (every IP we've actually observed), excludes mobile (46.x)
+// and any other ISP, and needs no hardcoded IP — it adapts to the lock's current block.
+// NOTE: matching the first TWO octets exactly (/16) does NOT work here — the ISP moves
+// between 77.28 and 77.29, so the guest and lock often differ in the 2nd octet while
+// both on the apartment WiFi; that's the failure this pairing fixes.
+function sameIspBlock(a, b) {
+  if (!a || !b) return false;
+  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+  if (pa.length < 2 || pb.length < 2) return false;
+  return pa[0] === pb[0] && (pa[1] & 0xFE) === (pb[1] & 0xFE);
+}
+function onApartmentNet(guestIp, aptIp) {
+  return !!guestIp && !!aptIp && (guestIp === aptIp || sameIspBlock(guestIp, aptIp));
+}
 
 // DIAGNOSTIC (open in a browser): list the remotes under an IR blaster
 app.get('/api/tuya/remotes/:blaster', async (req, res) => {
@@ -967,13 +986,11 @@ app.post('/api/guest/unlock', async (req, res) => {
     // reported IP can lag a few minutes behind a very recent ISP change.
     const guestIp = normIp(clientIp(req));
     let aptIp = null;
-    try { aptIp = normIp(await lockPublicIp(lockId)); } catch (e) { /* fall through */ }
+    try { aptIp = normIp(await lockPublicIp(lockId, true)); } catch (e) { /* fall through */ }
     if (!aptIp) {
       return res.status(503).json({ error: 'wifi-check-unavailable' }); // can't verify right now
     }
-    const same16 = (a, b) => a && b && a.split('.').slice(0, 2).join('.') === b.split('.').slice(0, 2).join('.');
-    const onAptNet = guestIp === aptIp || same16(guestIp, aptIp);
-    if (!onAptNet) {
+    if (!onApartmentNet(guestIp, aptIp)) {
       return res.status(403).json({ error: 'not-on-apartment-wifi' });
     }
 
@@ -1009,13 +1026,12 @@ app.get('/api/ip-check/:apt', async (req, res) => {
     if (!lockId) return res.json({ error: 'no lock for ' + req.params.apt });
     const guestIp = normIp(clientIp(req));
     let aptIp = null;
-    try { aptIp = normIp(await lockPublicIp(lockId)); } catch (e) { aptIp = 'ERROR: ' + e.message; }
-    const same16 = (a, b) => a && b && a.split('.').slice(0, 2).join('.') === b.split('.').slice(0, 2).join('.');
+    try { aptIp = normIp(await lockPublicIp(lockId, true)); } catch (e) { aptIp = 'ERROR: ' + e.message; }
     res.json({
       guestIp, apartmentIp: aptIp,
       exactMatch: guestIp === aptIp,
-      sameIspRange: same16(guestIp, aptIp),
-      wouldUnlock: guestIp === aptIp || same16(guestIp, aptIp),
+      sameIspBlock: sameIspBlock(guestIp, aptIp),
+      wouldUnlock: onApartmentNet(guestIp, aptIp),
     });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
