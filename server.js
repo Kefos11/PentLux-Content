@@ -640,6 +640,60 @@ async function tuyaUnlock(deviceId) {
   return { ok: false, method: 'all-failed', raw: open, ticket };
 }
 
+// ===== TUYA TEMPORARY PASSWORD (chosen keypad PIN per reservation) =====
+// Tuya makes you encrypt the PIN with a one-time key: get a password-ticket
+// (ticket_id + encrypted ticket_key), decrypt the ticket_key with the account
+// secret, then AES-ECB-encrypt the PIN with that real key. The exact key for the
+// first decrypt is the fiddly bit — we try the account secret. The pin-test
+// endpoint returns the raw Tuya response so we can confirm/iterate.
+function aesEcbDecryptHex(keyStr, hexData) {
+  const key = Buffer.from(keyStr, 'utf8');
+  const algo = key.length === 32 ? 'aes-256-ecb' : 'aes-128-ecb';
+  const d = crypto.createDecipheriv(algo, key, null);
+  d.setAutoPadding(false);
+  return Buffer.concat([d.update(Buffer.from(hexData, 'hex')), d.final()]);
+}
+function aesEcbEncryptToHex(keyBuf, plainStr) {
+  const algo = keyBuf.length === 32 ? 'aes-256-ecb' : 'aes-128-ecb';
+  const c = crypto.createCipheriv(algo, keyBuf, null); // PKCS7 padding on by default
+  return Buffer.concat([c.update(Buffer.from(plainStr, 'utf8')), c.final()]).toString('hex');
+}
+
+// Create a temporary keypad password on the lock, valid effTs..invTs (unix seconds).
+// Returns { ok, pwd_id, raw } so callers can store pwd_id for later deletion.
+async function tuyaCreateTempPassword(deviceId, pin, effTs, invTs, name) {
+  const secret = (TUYA_ACCTS.lock.secret && TUYA_ACCTS.lock.secret()) || '';
+  const ticket = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/password-ticket`, {}, 'lock');
+  const tr = ticket && ticket.result;
+  if (!tr || !tr.ticket_id || !tr.ticket_key) return { ok: false, step: 'ticket', raw: ticket };
+  let encPin, realKeyLen;
+  try {
+    const realKey = aesEcbDecryptHex(secret, tr.ticket_key);
+    realKeyLen = realKey.length;
+    encPin = aesEcbEncryptToHex(realKey, String(pin));
+  } catch (e) {
+    return { ok: false, step: 'encrypt', error: String(e.message || e) };
+  }
+  const body = {
+    password: encPin,
+    password_type: 'ticket',
+    ticket_id: tr.ticket_id,
+    effective_time: effTs,
+    invalid_time: invTs,
+    type: 0,                 // valid any time within the window (not one-time)
+    name: name || 'guest',
+  };
+  const res = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/temp-password`, body, 'lock');
+  const pwd_id = res && res.result && (res.result.id || res.result.pwd_id);
+  return { ok: !!(res && res.success && pwd_id), pwd_id, realKeyLen, raw: res };
+}
+
+// Delete a temp password by its id.
+async function tuyaDeleteTempPassword(deviceId, pwdId) {
+  const res = await tuyaRequest('DELETE', `/v1.0/devices/${deviceId}/door-lock/temp-passwords/${pwdId}`, {}, 'lock');
+  return { ok: !!(res && res.success), raw: res };
+}
+
 // Read a lock's CURRENT public IP from Tuya (self-updating, so a dynamic ISP IP
 // is always fresh). Tuya's device-detail returns an `ip` field = the device's
 // public IP, which is the apartment's public IP. Cached ~2 min to avoid spamming.
@@ -1033,6 +1087,39 @@ app.get('/api/ip-check/:apt', async (req, res) => {
       sameIspBlock: sameIspBlock(guestIp, aptIp),
       wouldUnlock: onApartmentNet(guestIp, aptIp),
     });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// DEBUG: full lock status — online state, battery, link_mode, all settings.
+// Answers "is the lock online / napping at night?" and shows battery. e.g. /api/lock-info/apt50
+app.get('/api/lock-info/:apt', async (req, res) => {
+  try {
+    const lockId = LOCKS[req.params.apt];
+    if (!lockId) return res.json({ error: 'no lock for ' + req.params.apt });
+    const detail = await tuyaRequest('GET', `/v1.0/devices/${lockId}`, null, 'lock');       // online, ip, etc.
+    const status = await tuyaRequest('GET', `/v1.0/devices/${lockId}/status`, null, 'lock'); // DPs: battery, link_mode…
+    res.json({
+      online: detail && detail.result ? detail.result.online : null,
+      ip: detail && detail.result ? detail.result.ip : null,
+      detail: detail && detail.result ? detail.result : detail,
+      status: status && status.result ? status.result : status,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// DEBUG: program a test keypad PIN valid for the next hour, return the raw Tuya
+// response so we can confirm the encryption works. e.g. /api/pin-test/apt50/50773676
+app.get('/api/pin-test/:apt/:code', async (req, res) => {
+  try {
+    const lockId = LOCKS[req.params.apt];
+    if (!lockId) return res.json({ error: 'no lock for ' + req.params.apt });
+    const now = Math.floor(Date.now() / 1000);
+    const out = await tuyaCreateTempPassword(lockId, req.params.code, now, now + 3600, 'pin-test');
+    res.json({ apt: req.params.apt, code: req.params.code, result: out });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
