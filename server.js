@@ -716,6 +716,47 @@ function clientIp(req) {
 // Normalise an IP for comparison (strip IPv6 ::ffff: prefix, whitespace).
 function normIp(ip) { return String(ip || '').replace(/^::ffff:/, '').trim(); }
 
+// ===== PRESENCE CHECK (GPS location OR scanned QR) =====
+// The door opens only if the guest proves they're at the apartment, by EITHER
+// being within `radius` metres of it (phone GPS) OR scanning the QR code at the
+// door. Both are verified server-side so the client can't fake them.
+const APT_GEO = {
+  // Both apartments are the same building (Bul. Ilinden 5, 12th floor).
+  apt49: { lat: 41.999164, lng: 21.428068, radius: 150 },
+  apt50: { lat: 41.999164, lng: 21.428068, radius: 150 },
+};
+// The secret each door's QR encodes. The QR at apt49's door shows QR_SECRETS.apt49, etc.
+// Backed by the live guest link + stay dates, so this isn't a high-value secret.
+const QR_SECRETS = {
+  apt49: process.env.QR_SECRET_49 || 'PENTLUX-49-7Kq3mXe',
+  apt50: process.env.QR_SECRET_50 || 'PENTLUX-50-9Vn2pLr',
+};
+// Distance between two lat/lng points in metres (haversine).
+function distMeters(lat1, lng1, lat2, lng2) {
+  const toRad = d => d * Math.PI / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+// Returns { ok, method, detail } — true if GPS is within radius OR qr matches.
+function checkPresence(apt, body) {
+  const geo = APT_GEO[apt];
+  // QR path
+  if (body && body.qr != null) {
+    const want = QR_SECRETS[apt];
+    if (want && String(body.qr).trim() === want) return { ok: true, method: 'qr' };
+    return { ok: false, method: 'qr', detail: 'qr-mismatch' };
+  }
+  // GPS path
+  if (body && body.lat != null && body.lng != null && geo) {
+    const d = distMeters(geo.lat, geo.lng, Number(body.lat), Number(body.lng));
+    if (d <= geo.radius) return { ok: true, method: 'gps', detail: { meters: Math.round(d) } };
+    return { ok: false, method: 'gps', detail: { meters: Math.round(d), radius: geo.radius } };
+  }
+  return { ok: false, method: 'none', detail: 'no-proof' };
+}
+
 // Is the guest on the apartment's internet? Their ISP uses CGNAT, so a guest on the
 // apartment WiFi and the lock can show DIFFERENT public IPs that still sit in the same
 // ISP block (seen: 77.28.x and 77.29.x on WiFi; 46.x on mobile). So we match a /15
@@ -1033,19 +1074,12 @@ app.post('/api/guest/unlock', async (req, res) => {
     const lockId = LOCKS[r.apt];
     if (!lockId) return res.status(404).json({ error: 'no lock for this apartment' });
 
-    // SAFETY GATE: the guest must be on the apartment's internet connection.
-    // We read the lock's current public IP from Tuya (self-updating for the dynamic
-    // ISP IP) and compare it to the guest's public IP. Exact match passes; as a
-    // safety net we also accept the same ISP /16 (first two octets), since the lock's
-    // reported IP can lag a few minutes behind a very recent ISP change.
-    const guestIp = normIp(clientIp(req));
-    let aptIp = null;
-    try { aptIp = normIp(await lockPublicIp(lockId, true)); } catch (e) { /* fall through */ }
-    if (!aptIp) {
-      return res.status(503).json({ error: 'wifi-check-unavailable' }); // can't verify right now
-    }
-    if (!onApartmentNet(guestIp, aptIp)) {
-      return res.status(403).json({ error: 'not-on-apartment-wifi' });
+    // PRESENCE GATE: guest must prove they're at the apartment — GPS within range
+    // OR a matching QR scan. (Replaces the old IP check, which this building's
+    // network — CGNAT + separate ISP lines for lock vs guest WiFi — made unusable.)
+    const pres = checkPresence(r.apt, req.body || {});
+    if (!pres.ok) {
+      return res.status(403).json({ error: 'presence-required', presence: pres });
     }
 
     const out = await tuyaUnlock(lockId);
@@ -1072,24 +1106,23 @@ app.get('/api/lock-test/:apt', async (req, res) => {
   }
 });
 
-// DEBUG: open on your phone to see your public IP vs the apartment's lock IP,
-// and whether the gate would pass. e.g. /api/ip-check/apt50
-app.get('/api/ip-check/:apt', async (req, res) => {
-  try {
-    const lockId = LOCKS[req.params.apt];
-    if (!lockId) return res.json({ error: 'no lock for ' + req.params.apt });
-    const guestIp = normIp(clientIp(req));
-    let aptIp = null;
-    try { aptIp = normIp(await lockPublicIp(lockId, true)); } catch (e) { aptIp = 'ERROR: ' + e.message; }
-    res.json({
-      guestIp, apartmentIp: aptIp,
-      exactMatch: guestIp === aptIp,
-      sameIspBlock: sameIspBlock(guestIp, aptIp),
-      wouldUnlock: onApartmentNet(guestIp, aptIp),
-    });
-  } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
-  }
+// DEBUG: test the GPS distance from a point. Open on your phone with your coords:
+//   /api/geo-check/apt50?lat=41.999&lng=21.428
+app.get('/api/geo-check/:apt', (req, res) => {
+  const geo = APT_GEO[req.params.apt];
+  if (!geo) return res.json({ error: 'no geo for ' + req.params.apt });
+  const lat = Number(req.query.lat), lng = Number(req.query.lng);
+  if (!isFinite(lat) || !isFinite(lng)) return res.json({ error: 'pass ?lat=..&lng=..', apartment: geo });
+  const meters = Math.round(distMeters(geo.lat, geo.lng, lat, lng));
+  res.json({ meters, radius: geo.radius, wouldUnlock: meters <= geo.radius, apartment: geo });
+});
+
+// INFO: the QR secret each door should encode (so you can print the QR). Admin-gated.
+//   /api/qr-secret/apt50  (needs Authorization: Bearer ADMIN_TOKEN, or ?token=ADMIN_TOKEN)
+app.get('/api/qr-secret/:apt', (req, res) => {
+  const tok = (req.headers.authorization === 'Bearer ' + ADMIN_TOKEN) || (req.query.token === ADMIN_TOKEN);
+  if (!ADMIN_TOKEN || !tok) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ apt: req.params.apt, qr_secret: QR_SECRETS[req.params.apt] || null });
 });
 
 // DEBUG: full lock status — online state, battery, link_mode, all settings.
