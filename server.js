@@ -23,6 +23,7 @@ const { Pool } = require('pg');
 const crypto = require('crypto');
 
 const app = express();
+app.set('trust proxy', true);   // Railway runs behind a proxy — makes req.ip the real client IP
 app.use(express.json({ limit: '1mb' }));
 
 const pool = new Pool({
@@ -42,6 +43,21 @@ app.use((req, res, next) => {
 });
 
 const VALID_APTS = ['apt49', 'apt50'];
+
+// --- action audit: who fired what, from which IP ------------------------
+// Kept in memory (last 500) for /api/audit, and printed to the Railway logs
+// with an [audit] prefix so there's a durable trail across restarts.
+const AUDIT = [];
+function clientIp(req){
+  const xf = (req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return xf || req.ip || (req.socket && req.socket.remoteAddress) || '';
+}
+function audit(req, action, detail){
+  const row = Object.assign({ t: new Date().toISOString(), ip: clientIp(req), action }, detail || {});
+  AUDIT.push(row);
+  if (AUDIT.length > 500) AUDIT.shift();
+  try { console.log('[audit]', JSON.stringify(row)); } catch(e){}
+}
 
 // ====== SHELLY LIGHTS ======
 // Fill in each light once you have the Device IDs from the Shelly app.
@@ -240,13 +256,17 @@ app.post('/api/reservations', async (req, res) => {
   const token = makeToken(7);
   const reveal = b.reveal_at || defReveal(b.checkin);
   const unveal = b.unveal_at || defUnveal(b.checkout);
+  // Auto keypad code = apt number + last 6 of phone, unless the admin typed one.
+  const door_code = (b.door_code || '').trim() || autoCode(apt, b.guest_phone);
   try {
     const { rows } = await pool.query(
       `INSERT INTO guest_links (token, guest_name, guest_phone, apt, checkin, checkout, reveal_at, unveal_at, door_code, notes, welcome_color, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'active') RETURNING *`,
       [token, b.guest_name || '', onlyDigits(b.guest_phone), apt, b.checkin || null, b.checkout || null,
-       reveal, unveal, b.door_code || '', b.notes || '', b.welcome_color || null]);
-    res.json({ ok: true, reservation: rows[0] });
+       reveal, unveal, door_code, b.notes || '', b.welcome_color || null]);
+    let pin = null;
+    if (AUTO_PIN) { pin = await programReservationPin(rows[0]); audit(req, 'pin-program', { apt, token, ok: pin.ok, via: 'create' }); }
+    res.json({ ok: true, reservation: rows[0], pin });
   } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
 });
 
@@ -278,8 +298,50 @@ app.put('/api/reservations/:id', async (req, res) => {
     const { rows } = await pool.query(
       `UPDATE guest_links SET ${fields.join(', ')}, updated_at = now() WHERE id = $${i} RETURNING *`, vals);
     if (!rows[0]) return res.status(404).json({ error: 'not found' });
-    res.json({ ok: true, reservation: rows[0] });
+    let row = rows[0];
+
+    // If phone or apartment changed and no explicit code was given, regenerate the auto code.
+    const regen = (b.guest_phone != null || b.apt != null) && b.door_code == null;
+    if (regen) {
+      const ac = autoCode(row.apt, row.guest_phone);
+      if (ac && ac !== row.door_code) {
+        await pool.query('UPDATE guest_links SET door_code = $1 WHERE id = $2', [ac, row.id]);
+        row.door_code = ac;
+      }
+    }
+    // Keep the lock in sync.
+    let pin = null;
+    if (b.status === 'cancelled') {
+      pin = await revokeReservationPin(row); audit(req, 'pin-revoke', { apt: row.apt, token: row.token, ok: pin.ok, via: 'cancel' });
+    } else if (AUTO_PIN && (regen || b.checkin != null || b.checkout != null || b.reveal_at != null || b.unveal_at != null || b.door_code != null || b.status === 'active')) {
+      pin = await programReservationPin(row); audit(req, 'pin-program', { apt: row.apt, token: row.token, ok: pin.ok, via: 'edit' });
+    }
+    res.json({ ok: true, reservation: row, pin });
   } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
+});
+
+// MANUAL: (re)program or revoke a reservation's keypad PIN — works even with AUTO_PIN off,
+// so you can test one real reservation on-site. Admin-gated.
+//   POST /api/reservations/:id/program-pin   ·   POST /api/reservations/:id/revoke-pin
+app.post('/api/reservations/:id/program-pin', async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const { rows } = await pool.query('SELECT * FROM guest_links WHERE id = $1', [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'not found' });
+    const out = await programReservationPin(rows[0]);
+    audit(req, 'pin-program', { apt: rows[0].apt, token: rows[0].token, ok: out.ok, via: 'manual' });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+app.post('/api/reservations/:id/revoke-pin', async (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const { rows } = await pool.query('SELECT * FROM guest_links WHERE id = $1', [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'not found' });
+    const out = await revokeReservationPin(rows[0]);
+    audit(req, 'pin-revoke', { apt: rows[0].apt, token: rows[0].token, ok: out.ok, via: 'manual' });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
 // LIST (admin)
@@ -694,6 +756,50 @@ async function tuyaDeleteTempPassword(deviceId, pwdId) {
   return { ok: !!(res && res.success), raw: res };
 }
 
+// ===== AUTO-PIN per reservation =====
+// Keypad code = apartment number (49/50) + last 6 digits of the guest's phone.
+// Programmed into the lock for the stay window (reveal..unveal), revoked on cancel.
+// SAFETY: actual lock programming only runs when AUTO_PIN=1 in Railway — so this
+// can be deployed now and switched on once the pin-test confirms the encryption.
+const AUTO_PIN = process.env.AUTO_PIN === '1';
+function last6(phone) { return onlyDigits(phone).slice(-6); }
+function aptNum(apt) { return apt === 'apt50' ? '50' : '49'; }
+function autoCode(apt, phone) { const l6 = last6(phone); return l6 ? (aptNum(apt) + l6) : ''; }
+function pinWindow(r) {
+  const eff = r.reveal_at ? Math.floor(new Date(r.reveal_at).getTime() / 1000)
+            : r.checkin   ? Math.floor(new Date(r.checkin).getTime() / 1000) : null;
+  const inv = r.unveal_at ? Math.floor(new Date(r.unveal_at).getTime() / 1000)
+            : r.checkout  ? Math.floor(new Date(r.checkout).getTime() / 1000) : null;
+  return { eff, inv };
+}
+// (Re)program a reservation's keypad PIN. Deletes any previous one first, then
+// stores the new pwd_id + door_code on the row. Best-effort: returns the result,
+// never throws into the request.
+async function programReservationPin(r) {
+  try {
+    const lockId = LOCKS[r.apt]; if (!lockId) return { ok: false, error: 'no lock for ' + r.apt };
+    const code = (r.door_code || '').trim() || autoCode(r.apt, r.guest_phone);
+    if (!code) return { ok: false, error: 'no door_code / phone to build a code' };
+    const { eff, inv } = pinWindow(r);
+    if (!eff || !inv) return { ok: false, error: 'no stay window (checkin/checkout)' };
+    if (r.door_pwd_id) { try { await tuyaDeleteTempPassword(lockId, r.door_pwd_id); } catch (e) {} }
+    const out = await tuyaCreateTempPassword(lockId, code, eff, inv, (r.guest_name || 'guest').slice(0, 30));
+    if (out.ok) {
+      await pool.query('UPDATE guest_links SET door_pwd_id = $1, door_code = $2 WHERE id = $3', [String(out.pwd_id), code, r.id]);
+    }
+    return out;
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+async function revokeReservationPin(r) {
+  try {
+    const lockId = LOCKS[r.apt];
+    if (!lockId || !r.door_pwd_id) return { ok: true, skipped: true };
+    const out = await tuyaDeleteTempPassword(lockId, r.door_pwd_id);
+    await pool.query('UPDATE guest_links SET door_pwd_id = NULL WHERE id = $1', [r.id]);
+    return out;
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+
 // Read a lock's CURRENT public IP from Tuya (self-updating, so a dynamic ISP IP
 // is always fresh). Tuya's device-detail returns an `ip` field = the device's
 // public IP, which is the apartment's public IP. Cached ~2 min to avoid spamming.
@@ -945,6 +1051,7 @@ app.post('/api/guest/control', async (req, res) => {
   try {
     const r = await liveReservation((req.body || {}).token);
     if (!r) return res.status(403).json({ error: 'reservation not active' });
+    audit(req, 'guest-control', { apt: r.apt, guest: r.guest_name, token: r.token, dev: (req.body||{}).id, kind: (req.body||{}).kind, on: (req.body||{}).on });
     const out = await controlDevice(r.apt, req.body);
     res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
@@ -958,6 +1065,7 @@ app.post('/api/guest/ir', async (req, res) => {
     const grp = IR[r.apt]; if (!grp) return res.status(404).json({ error: 'no IR' });
     const dev = grp.devices.find(d => d.key === (req.body || {}).key);
     if (!dev) return res.status(404).json({ error: 'unknown device' });
+    audit(req, 'guest-ir', { apt: r.apt, guest: r.guest_name, token: r.token, key: dev.key, action: (req.body||{}).action });
     const out = await irSend(grp.blaster, dev, (req.body || {}).action);
     if (out && out.success === false) return res.status(502).json({ error: 'Tuya refused' });
     res.json({ ok: true });
@@ -969,6 +1077,7 @@ app.post('/api/guest/scene', async (req, res) => {
   try {
     const r = await liveReservation((req.body || {}).token);
     if (!r) return res.status(403).json({ error: 'reservation not active' });
+    audit(req, 'guest-scene', { apt: r.apt, guest: r.guest_name, token: r.token, scene: (req.body||{}).scene });
     const out = await runScene(r.apt, (req.body || {}).scene, req.body || {});
     res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
@@ -978,10 +1087,23 @@ app.post('/api/guest/scene', async (req, res) => {
 app.post('/api/scene', async (req, res) => {
   const need = process.env.CONTROL_TOKEN || '';
   if (need && (req.body || {}).token !== need) return res.status(401).json({ error: 'unauthorized' });
+  audit(req, 'admin-scene', { apt: (req.body||{}).apt, scene: (req.body||{}).scene });
   try {
     const out = await runScene((req.body || {}).apt, (req.body || {}).scene, req.body || {});
     res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: String(e.message || e) }); }
+});
+
+// VIEW the recent action audit (who fired what, from which IP). Admin-gated.
+//   /api/audit?token=ADMIN_TOKEN            -> last 100, newest first
+//   /api/audit?token=...&apt=apt49&n=200    -> filter by apartment
+app.get('/api/audit', (req, res) => {
+  const tok = req.query.token || '';
+  if (ADMIN_TOKEN && tok !== ADMIN_TOKEN && tok !== (process.env.CONTROL_TOKEN || '')) return res.status(401).json({ error: 'unauthorized' });
+  let rows = AUDIT.slice();
+  if (req.query.apt) rows = rows.filter(r => r.apt === req.query.apt);
+  const n = Math.min(Number(req.query.n) || 100, 500);
+  res.json({ count: Math.min(rows.length, n), rows: rows.slice(-n).reverse() });
 });
 
 // ── TRANSLATION (free Google endpoint, in-memory cached) ──────────────
@@ -1078,6 +1200,7 @@ app.post('/api/guest/unlock', async (req, res) => {
     // OR a matching QR scan. (Replaces the old IP check, which this building's
     // network — CGNAT + separate ISP lines for lock vs guest WiFi — made unusable.)
     const pres = checkPresence(r.apt, req.body || {});
+    audit(req, 'guest-unlock', { apt: r.apt, guest: r.guest_name, token: r.token, method: pres.method, allowed: pres.ok });
     if (!pres.ok) {
       return res.status(403).json({ error: 'presence-required', presence: pres });
     }
@@ -1166,6 +1289,7 @@ const port = process.env.PORT || 3000;
   try {
     await pool.query('ALTER TABLE guest_links ADD COLUMN IF NOT EXISTS welcome_color TEXT');
     await pool.query('ALTER TABLE guest_links ADD COLUMN IF NOT EXISTS welcome_done BOOLEAN DEFAULT false');
+    await pool.query('ALTER TABLE guest_links ADD COLUMN IF NOT EXISTS door_pwd_id TEXT');
   } catch (e) { console.error('[schema]', e.message); }
 })();
 app.listen(port, () => console.log('PentLux content API listening on ' + port));
