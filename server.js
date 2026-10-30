@@ -788,7 +788,7 @@ async function programReservationPin(r) {
     const { eff, inv } = pinWindow(r);
     if (!eff || !inv) return { ok: false, error: 'no stay window (checkin/checkout)' };
     if (r.door_pwd_id) { try { await tuyaDeleteTempPassword(lockId, r.door_pwd_id); } catch (e) {} }
-    const out = await tuyaCreateTempPassword(lockId, code, eff, inv, (r.guest_name || 'guest').slice(0, 30));
+    const out = await tuyaCreateTempPassword(lockId, code, eff, inv, String(code));
     if (out.ok) {
       await pool.query('UPDATE guest_links SET door_pwd_id = $1, door_code = $2 WHERE id = $3', [String(out.pwd_id), code, r.id]);
     }
@@ -1279,7 +1279,7 @@ app.get('/api/pin-test/:apt/:code', async (req, res) => {
     const lockId = LOCKS[req.params.apt];
     if (!lockId) return res.json({ error: 'no lock for ' + req.params.apt });
     const now = Math.floor(Date.now() / 1000);
-    const out = await tuyaCreateTempPassword(lockId, req.params.code, now, now + 3600, 'pin-test');
+    const out = await tuyaCreateTempPassword(lockId, req.params.code, now, now + 3600, req.params.code);
     res.json({ apt: req.params.apt, code: req.params.code, result: out });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
