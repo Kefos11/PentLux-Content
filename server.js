@@ -723,7 +723,7 @@ function aesEcbEncryptToHex(keyBuf, plainStr) {
 
 // Create a temporary keypad password on the lock, valid effTs..invTs (unix seconds).
 // Returns { ok, pwd_id, raw } so callers can store pwd_id for later deletion.
-async function tuyaCreateTempPassword(deviceId, pin, effTs, invTs, name) {
+async function tuyaCreateTempPassword(deviceId, pin, effTs, invTs, name, opts = {}) {
   const secret = (TUYA_ACCTS.lock.secret && TUYA_ACCTS.lock.secret()) || '';
   const ticket = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/password-ticket`, {}, 'lock');
   const tr = ticket && ticket.result;
@@ -742,9 +742,10 @@ async function tuyaCreateTempPassword(deviceId, pin, effTs, invTs, name) {
     ticket_id: tr.ticket_id,
     effective_time: effTs,
     invalid_time: invTs,
-    type: 0,                 // valid any time within the window (not one-time)
     name: name || 'guest',
   };
+  if (!opts.noType) body.type = 0;              // some locks reject an unknown type field
+  if (opts.timeZone) body.time_zone = opts.timeZone;
   const res = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/temp-password`, body, 'lock');
   const pwd_id = res && res.result && (res.result.id || res.result.pwd_id);
   return { ok: !!(res && res.success && pwd_id), pwd_id, realKeyLen, raw: res };
@@ -1279,6 +1280,35 @@ app.get('/api/pin-test/:apt/:code', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
+});
+
+// DIAGNOSTIC: try several temp-password variants to find what this lock accepts.
+// One call tests code length (8/7/6/4), future effective_time, type field, timezone.
+// e.g. /api/pin-diag/apt50   (optional ?code=50999999)
+app.get('/api/pin-diag/:apt', async (req, res) => {
+  const lockId = LOCKS[req.params.apt];
+  if (!lockId) return res.json({ error: 'no lock for ' + req.params.apt });
+  const base = (req.query.code || '50999999').replace(/\D/g, '');
+  const now = Math.floor(Date.now() / 1000);
+  const variants = [
+    { label: '8-digit · eff now · type0',        pin: base,            eff: now,       inv: now + 3600,  opts: {} },
+    { label: '8-digit · eff +120 · noType',      pin: base,            eff: now + 120, inv: now + 86400, opts: { noType: true } },
+    { label: '8-digit · eff +120 · tz+02 noType',pin: base,            eff: now + 120, inv: now + 86400, opts: { noType: true, timeZone: '+02:00' } },
+    { label: '7-digit · eff +120 · noType',      pin: base.slice(-7),  eff: now + 120, inv: now + 86400, opts: { noType: true } },
+    { label: '6-digit · eff +120 · noType',      pin: base.slice(-6),  eff: now + 120, inv: now + 86400, opts: { noType: true } },
+    { label: '4-digit · eff +120 · noType',      pin: base.slice(-4),  eff: now + 120, inv: now + 86400, opts: { noType: true } },
+  ];
+  const out = [];
+  for (const v of variants) {
+    try {
+      const r = await tuyaCreateTempPassword(lockId, v.pin, v.eff, v.inv, 'diag', v.opts);
+      out.push({ variant: v.label, pin: v.pin, ok: r.ok, code: r.raw && r.raw.code, msg: r.raw && r.raw.msg, pwd_id: r.pwd_id });
+    } catch (e) {
+      out.push({ variant: v.label, pin: v.pin, error: String(e.message || e) });
+    }
+    await new Promise(r => setTimeout(r, 1300)); // Tuya rate limit
+  }
+  res.json({ apt: req.params.apt, tried: out });
 });
 
 app.get('/', (_req, res) => res.send('PentLux content API is running.'));
