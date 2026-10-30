@@ -1311,6 +1311,57 @@ app.get('/api/pin-diag/:apt', async (req, res) => {
   res.json({ apt: req.params.apt, tried: out });
 });
 
+// DIAGNOSTIC 2: the 1109 is almost certainly the password encryption. Try every
+// combination of {ticket_key encoding} x {AES-128 vs AES-256} x {hex vs base64 out}.
+// Also dumps the raw ticket so we can see the key format. e.g. /api/pin-diag2/apt50
+async function tempPwdAttempt(deviceId, pin, eff, inv, sc) {
+  const secret = (TUYA_ACCTS.lock.secret && TUYA_ACCTS.lock.secret()) || '';
+  const ticket = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/password-ticket`, {}, 'lock');
+  const tr = ticket && ticket.result;
+  if (!tr || !tr.ticket_id || !tr.ticket_key) return { scheme: sc.label, step: 'ticket', raw: ticket };
+  let realKey, encPin;
+  try {
+    const tkBuf = Buffer.from(tr.ticket_key, sc.tkEnc);
+    const d = crypto.createDecipheriv(secret.length === 32 ? 'aes-256-ecb' : 'aes-128-ecb', Buffer.from(secret, 'utf8'), null);
+    d.setAutoPadding(false);
+    realKey = Buffer.concat([d.update(tkBuf), d.final()]);
+  } catch (e) { return { scheme: sc.label, step: 'decrypt', error: String(e.message || e) }; }
+  try {
+    const keyBuf = sc.keyLen === 16 ? realKey.slice(0, 16) : realKey;
+    const c = crypto.createCipheriv(keyBuf.length === 32 ? 'aes-256-ecb' : 'aes-128-ecb', keyBuf, null);
+    encPin = Buffer.concat([c.update(Buffer.from(String(pin), 'utf8')), c.final()]).toString(sc.outEnc);
+  } catch (e) { return { scheme: sc.label, step: 'encrypt', error: String(e.message || e), realKeyLen: realKey.length }; }
+  const body = { name: 'diag', password: encPin, password_type: 'ticket', ticket_id: tr.ticket_id, effective_time: eff, invalid_time: inv };
+  const res = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/temp-password`, body, 'lock');
+  return { scheme: sc.label, tkLen: tr.ticket_key.length, realKeyLen: realKey.length, encLen: encPin.length, ok: !!(res && res.success), code: res && res.code, msg: res && res.msg };
+}
+app.get('/api/pin-diag2/:apt', async (req, res) => {
+  const lockId = LOCKS[req.params.apt];
+  if (!lockId) return res.json({ error: 'no lock for ' + req.params.apt });
+  const pin = (req.query.code || '123456').replace(/\D/g, '');
+  const now = Math.floor(Date.now() / 1000), eff = now + 120, inv = now + 86400;
+  // raw ticket dump for inspection
+  let rawTicket = null;
+  try { const t = await tuyaRequest('POST', `/v1.0/devices/${lockId}/door-lock/password-ticket`, {}, 'lock'); rawTicket = t && t.result; } catch (e) {}
+  await new Promise(r => setTimeout(r, 1300));
+  const schemes = [
+    { label: 'tkHex·k32·hex',  tkEnc: 'hex',    keyLen: 32, outEnc: 'hex' },
+    { label: 'tkHex·k16·hex',  tkEnc: 'hex',    keyLen: 16, outEnc: 'hex' },
+    { label: 'tkHex·k32·b64',  tkEnc: 'hex',    keyLen: 32, outEnc: 'base64' },
+    { label: 'tkHex·k16·b64',  tkEnc: 'hex',    keyLen: 16, outEnc: 'base64' },
+    { label: 'tkB64·k32·hex',  tkEnc: 'base64', keyLen: 32, outEnc: 'hex' },
+    { label: 'tkB64·k16·hex',  tkEnc: 'base64', keyLen: 16, outEnc: 'hex' },
+    { label: 'tkB64·k16·b64',  tkEnc: 'base64', keyLen: 16, outEnc: 'base64' },
+  ];
+  const tried = [];
+  for (const sc of schemes) {
+    try { tried.push(await tempPwdAttempt(lockId, pin, eff, inv, sc)); }
+    catch (e) { tried.push({ scheme: sc.label, error: String(e.message || e) }); }
+    await new Promise(r => setTimeout(r, 1300));
+  }
+  res.json({ apt: req.params.apt, pin, ticketKeyLen: rawTicket && rawTicket.ticket_key ? rawTicket.ticket_key.length : null, ticketKeySample: rawTicket && rawTicket.ticket_key ? String(rawTicket.ticket_key).slice(0, 24) : null, secretLen: ((TUYA_ACCTS.lock.secret && TUYA_ACCTS.lock.secret()) || '').length, tried });
+});
+
 app.get('/', (_req, res) => res.send('PentLux content API is running.'));
 
 const port = process.env.PORT || 3000;
