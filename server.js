@@ -732,19 +732,23 @@ async function tuyaCreateTempPassword(deviceId, pin, effTs, invTs, name, opts = 
   try {
     const realKey = aesEcbDecryptHex(secret, tr.ticket_key);
     realKeyLen = realKey.length;
-    encPin = aesEcbEncryptToHex(realKey, String(pin));
+    // Tuya expects AES-128-ECB with the FIRST 16 bytes of the decrypted ticket key,
+    // hex output (confirmed via /api/pin-diag2 — scheme tkHex·k16·hex).
+    encPin = aesEcbEncryptToHex(realKey.slice(0, 16), String(pin));
   } catch (e) {
     return { ok: false, step: 'encrypt', error: String(e.message || e) };
   }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const effSafe = (effTs && effTs > nowSec + 60) ? effTs : nowSec + 60;   // must be slightly in the future
   const body = {
     password: encPin,
     password_type: 'ticket',
     ticket_id: tr.ticket_id,
-    effective_time: effTs,
+    effective_time: effSafe,
     invalid_time: invTs,
     name: name || 'guest',
   };
-  if (!opts.noType) body.type = 0;              // some locks reject an unknown type field
+  // Do NOT send `type` — this lock returns 1109 when it's present (confirmed via diag2).
   if (opts.timeZone) body.time_zone = opts.timeZone;
   const res = await tuyaRequest('POST', `/v1.0/devices/${deviceId}/door-lock/temp-password`, body, 'lock');
   const pwd_id = res && res.result && (res.result.id || res.result.pwd_id);
