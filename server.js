@@ -97,7 +97,7 @@ const LIGHTS = {
     { key: 'stairsled',    name: 'Stairs LED',           deviceId: 'e868e7f38cf4', type: 'rgb', room: 'Spa' },
     { key: 'saunaled',     name: 'Sauna LED',            deviceId: 'a56a3c', type: 'rgb', room: 'Spa' },
     { key: 'wardrobeled',  name: 'Wardrobe LED',         deviceId: 'a69c16', type: 'rgb', room: 'Bedroom' },
-    { key: 'projector',    name: 'Projector screen',     deviceId: '34945477c20a', type: 'cover', favPos: 72, room: 'Cinema' },
+    { key: 'projector',    name: 'Projector screen',     deviceId: 'a0dd6c59a3e8', type: 'cover', favPos: 72, room: 'Cinema' },
     { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1, room: 'Entrance' },
   ],
 };
@@ -260,10 +260,10 @@ app.post('/api/reservations', async (req, res) => {
   const door_code = (b.door_code || '').trim() || autoCode(apt, b.guest_phone);
   try {
     const { rows } = await pool.query(
-      `INSERT INTO guest_links (token, guest_name, guest_phone, apt, checkin, checkout, reveal_at, unveal_at, door_code, notes, welcome_color, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'active') RETURNING *`,
+      `INSERT INTO guest_links (token, guest_name, guest_phone, apt, checkin, checkout, reveal_at, unveal_at, door_code, notes, welcome_color, lang, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active') RETURNING *`,
       [token, b.guest_name || '', onlyDigits(b.guest_phone), apt, b.checkin || null, b.checkout || null,
-       reveal, unveal, door_code, b.notes || '', b.welcome_color || null]);
+       reveal, unveal, door_code, b.notes || '', b.welcome_color || null, b.lang || null]);
     let pin = null;
     if (AUTO_PIN) { pin = await programReservationPin(rows[0]); audit(req, 'pin-program', { apt, token, ok: pin.ok, via: 'create' }); }
     res.json({ ok: true, reservation: rows[0], pin });
@@ -290,6 +290,7 @@ app.put('/api/reservations/:id', async (req, res) => {
   if (b.checkout != null && b.unveal_at == null) set('unveal_at', b.checkout ? defUnveal(b.checkout) : null);
   if (b.door_code != null) set('door_code', b.door_code);
   if (b.welcome_color != null) set('welcome_color', b.welcome_color || null);
+  if (b.lang != null) set('lang', b.lang || null);
   if (b.notes != null) set('notes', b.notes);
   if (b.status != null) set('status', b.status === 'cancelled' ? 'cancelled' : 'active');
   if (!fields.length) return res.json({ ok: true, unchanged: true });
@@ -372,6 +373,7 @@ app.get('/api/reservation/:token', async (req, res) => {
       door_code: revealed ? r.door_code : null,
       controls: revealed,
       welcome_color: r.welcome_color || null,
+      lang: r.lang || null,
     });
   } catch (e) { console.error(e); res.status(500).json({ error: 'database error' }); }
 });
@@ -1120,17 +1122,23 @@ async function gTranslate(text, to) {
   // Google's free web endpoint — no key. Returns translated text for one string.
   const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=' +
     encodeURIComponent(to) + '&dt=t&q=' + encodeURIComponent(text);
-  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-  if (!r.ok) throw new Error('translate http ' + r.status);
-  const data = await r.json();
-  // data[0] is an array of [translatedChunk, originalChunk, ...]; join the chunks.
-  return (data[0] || []).map(seg => seg[0]).join('');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);   // never hang on one string
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: ctrl.signal });
+    if (!r.ok) throw new Error('translate http ' + r.status);
+    const data = await r.json();
+    // data[0] is an array of [translatedChunk, originalChunk, ...]; join the chunks.
+    return (data[0] || []).map(seg => seg[0]).join('');
+  } finally { clearTimeout(timer); }
 }
 
 app.post('/api/translate', async (req, res) => {
   try {
     const { lang, texts } = req.body || {};
     if (!lang || !Array.isArray(texts)) return res.status(400).json({ error: 'lang and texts[] required' });
+    // remember the latest full English string set, so /api/i18n-prewarm can do every language
+    try { await pool.query('INSERT INTO i18n_manifest(id,texts) VALUES (1,$1) ON CONFLICT (id) DO UPDATE SET texts=EXCLUDED.texts', [JSON.stringify(texts)]); } catch (e) {}
     if (lang === 'en') return res.json({ lang, translations: texts }); // no-op
     _trCache[lang] = _trCache[lang] || {};
     const cache = _trCache[lang];
@@ -1142,21 +1150,59 @@ app.post('/api/translate', async (req, res) => {
       else if (cache[key] != null) { out[idx] = cache[key]; }
       else { todo.push({ idx, key }); }
     });
-    // Translate the uncached ones (sequential to be gentle on the free endpoint)
-    for (const item of todo) {
-      try {
-        const tr = await gTranslate(item.key, lang);
-        cache[item.key] = tr;
-        out[item.idx] = tr;
-      } catch (e) {
-        out[item.idx] = texts[item.idx]; // fall back to English on any failure
-      }
+    // Translate uncached strings in parallel, in small batches, each isolated so
+    // one slow/failed phrase can't block the rest (it just stays English).
+    const CONC = 6;
+    for (let i = 0; i < todo.length; i += CONC) {
+      const slice = todo.slice(i, i + CONC);
+      await Promise.all(slice.map(async item => {
+        try {
+          const tr = await gTranslate(item.key, lang);
+          cache[item.key] = tr; out[item.idx] = tr;
+          // persist immediately so this phrase is never translated again
+          try { await pool.query('INSERT INTO i18n_cache(lang,src,tr) VALUES ($1,$2,$3) ON CONFLICT (lang,src) DO UPDATE SET tr=EXCLUDED.tr', [lang, item.key, tr]); } catch (e) {}
+        } catch (e) { out[item.idx] = texts[item.idx]; } // fall back to English
+      }));
     }
     res.json({ lang, translations: out });
   } catch (e) {
     console.error('[translate]', e.message);
     res.status(500).json({ error: 'translate error' });
   }
+});
+
+// PRE-WARM: translate the whole hub into every language once and store it, so
+// guests always load instantly from the database. Open the hub in ANY non-English
+// language once first (so the server learns the text), then visit:
+//   /api/i18n-prewarm?token=ADMIN_TOKEN          (all languages)
+//   /api/i18n-prewarm?token=...&langs=el,de,fr   (only these)
+app.get('/api/i18n-prewarm', async (req, res) => {
+  const tok = req.query.token || '';
+  if (ADMIN_TOKEN && tok !== ADMIN_TOKEN && tok !== (process.env.CONTROL_TOKEN || '')) return res.status(401).json({ error: 'unauthorized' });
+  const ALL = ['mk','sq','tr','de','sr','it','es','ro','nl','fr','bg','el','ru','pl','pt','hr','sl','hu','cs','uk','no','sv','ar','zh-CN','ja','ko'];
+  const langs = req.query.langs ? req.query.langs.split(',').map(s => s.trim()).filter(Boolean) : ALL;
+  let manifest = [];
+  try { const { rows } = await pool.query('SELECT texts FROM i18n_manifest WHERE id=1'); manifest = rows[0] ? rows[0].texts : []; } catch (e) {}
+  if (!manifest || !manifest.length) return res.json({ error: 'No text learned yet — open the guest hub once in any non-English language, then retry this link.' });
+  const summary = [];
+  for (const lang of langs) {
+    _trCache[lang] = _trCache[lang] || {};
+    const cache = _trCache[lang];
+    const todo = manifest.map(t => (t || '').trim()).filter(k => k && cache[k] == null);
+    let done = 0;
+    const CONC = 6;
+    for (let i = 0; i < todo.length; i += CONC) {
+      const slice = todo.slice(i, i + CONC);
+      await Promise.all(slice.map(async key => {
+        try {
+          const tr = await gTranslate(key, lang); cache[key] = tr; done++;
+          await pool.query('INSERT INTO i18n_cache(lang,src,tr) VALUES ($1,$2,$3) ON CONFLICT (lang,src) DO UPDATE SET tr=EXCLUDED.tr', [lang, key, tr]);
+        } catch (e) {}
+      }));
+    }
+    summary.push({ lang, newly: done, total: Object.keys(cache).length });
+  }
+  res.json({ ok: true, phrases: manifest.length, prewarmed: summary });
 });
 
 // DEBUG: fire the entrance relay directly and return the raw Shelly response,
@@ -1375,6 +1421,13 @@ const port = process.env.PORT || 3000;
     await pool.query('ALTER TABLE guest_links ADD COLUMN IF NOT EXISTS welcome_color TEXT');
     await pool.query('ALTER TABLE guest_links ADD COLUMN IF NOT EXISTS welcome_done BOOLEAN DEFAULT false');
     await pool.query('ALTER TABLE guest_links ADD COLUMN IF NOT EXISTS door_pwd_id TEXT');
+    await pool.query('ALTER TABLE guest_links ADD COLUMN IF NOT EXISTS lang TEXT');
+    // translation cache (translate each language once, keep it forever)
+    await pool.query('CREATE TABLE IF NOT EXISTS i18n_cache (lang TEXT, src TEXT, tr TEXT, PRIMARY KEY (lang, src))');
+    await pool.query('CREATE TABLE IF NOT EXISTS i18n_manifest (id INT PRIMARY KEY, texts JSONB)');
+    const { rows: crows } = await pool.query('SELECT lang, src, tr FROM i18n_cache');
+    for (const r of crows) { _trCache[r.lang] = _trCache[r.lang] || {}; _trCache[r.lang][r.src] = r.tr; }
+    console.log('[i18n] loaded ' + crows.length + ' cached translations');
   } catch (e) { console.error('[schema]', e.message); }
 })();
 app.listen(port, () => console.log('PentLux content API listening on ' + port));
