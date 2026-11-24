@@ -77,8 +77,8 @@ const LIGHTS = {
     { key: 'stairsled',  name: 'Stairs LED',       deviceId: 'a6afec',       type: 'light', room: 'Spa' },
     { key: 'logoled',    name: 'Logo LED',         deviceId: 'a5b535',       type: 'light', room: 'Living room & bedroom' },
     { key: 'saunaled',   name: 'Sauna LED',        deviceId: 'a56b06',       type: 'light', room: 'Spa' },
-    { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover', favPos: 51, room: 'Cinema' },
-    { key: 'entrance',   name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1, room: 'Entrance' },
+    { key: 'projector',  name: 'Projector screen', deviceId: '10061cfad170', type: 'cover', favPos: 51, maxOpen: 60, room: 'Cinema' },
+    { key: 'entrance',   name: 'Building entrance', deviceId: 'b0a73246c130', type: 'relay', acct: 'entrance', channel: 1, room: 'Entrance' },
   ],
   apt50: [
     { key: 'bar',          name: 'Bar lights',           deviceId: '8caab54cf1e5', type: 'light', room: 'Kitchen' },
@@ -97,8 +97,8 @@ const LIGHTS = {
     { key: 'stairsled',    name: 'Stairs LED',           deviceId: 'e868e7f38cf4', type: 'rgb', room: 'Spa' },
     { key: 'saunaled',     name: 'Sauna LED',            deviceId: 'a56a3c', type: 'rgb', room: 'Spa' },
     { key: 'wardrobeled',  name: 'Wardrobe LED',         deviceId: 'a69c16', type: 'rgb', room: 'Bedroom' },
-    { key: 'projector',    name: 'Projector screen',     deviceId: 'a0dd6c59a3e8', type: 'cover', favPos: 72, room: 'Cinema' },
-    { key: 'entrance', name: 'Building entrance', deviceId: '8caab5560679', type: 'relay', acct: 'entrance', channel: 1, room: 'Entrance' },
+    { key: 'projector',    name: 'Projector screen',     deviceId: 'a0dd6c59a3e8', type: 'cover', favPos: 72, maxOpen: 75, room: 'Cinema' },
+    { key: 'entrance', name: 'Building entrance', deviceId: 'b0a73246c130', type: 'relay', acct: 'entrance', channel: 1, room: 'Entrance' },
   ],
 };
 
@@ -397,7 +397,7 @@ app.get('/api/reservation/by-phone/:phone', async (req, res) => {
 app.get('/api/lights/:apt', (req, res) => {
   const apt = req.params.apt;
   if (!VALID_APTS.includes(apt)) return res.status(404).json({ error: 'unknown apartment' });
-  res.json((LIGHTS[apt] || []).map(l => ({ key: l.key, name: l.name, id: l.deviceId, type: l.type || 'switch', fav: l.favPos, room: l.room || 'Other', channel: l.channel })));
+  res.json((LIGHTS[apt] || []).map(l => ({ key: l.key, name: l.name, id: l.deviceId, type: l.type || 'switch', fav: l.favPos, max: l.maxOpen, room: l.room || 'Other', channel: l.channel })));
 });
 
 // --- LIGHTS: flip one on/off (gated by CONTROL_TOKEN for now) ---
@@ -512,7 +512,9 @@ async function controlDevice(apt, opts) {
            : (Number.isInteger(channel) ? channel : 0);
   let resp;
   if (kind === 'cover') {
-    resp = await shellyV2(acct, '/v2/devices/api/set/cover', { id, channel: ch, position: cover });
+    let pos = cover;
+    if (devRec && devRec.maxOpen != null && typeof pos === 'number' && pos > devRec.maxOpen) pos = devRec.maxOpen;
+    resp = await shellyV2(acct, '/v2/devices/api/set/cover', { id, channel: ch, position: pos });
   } else if (kind === 'rgb' || kind === 'rgbw') {
     const body = { id, channel: ch, on: on !== false };
     if (color) {
